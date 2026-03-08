@@ -23,5 +23,10 @@ cd ..
 rm -fR tmp
 
 
+# Aliases
 echo "alias vscode=\"code serve-web --host 0.0.0.0 --port 8080 --without-connection-token\"" >> ~/.bashrc
 echo "alias openserve=\"opencode web --hostname 0.0.0.0\"" >> ~/.bashrc
+alias "co=\"git checkout\""
+
+# Utilities
+sudo apt install tree
