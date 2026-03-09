@@ -30,3 +30,11 @@ alias "co=\"git checkout\""
 
 # Utilities
 sudo apt install tree
+
+# QOL
+sudo apt install tmux
+sudo apt -y install tmuxinator
+
+# Copy configs
+cp -r .config ~/
+cp .tmux.conf ~/
