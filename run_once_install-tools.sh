@@ -33,3 +33,6 @@ grep -qF 'alias co=' ~/.bashrc || echo 'alias co="git checkout"' >> ~/.bashrc
 
 # Utilities
 sudo apt-get install -y tree tmux tmuxinator
+
+# Bash prompt
+grep -qF 'bash/prompt.sh' ~/.bashrc || echo '[ -f ~/.config/bash/prompt.sh ] && source ~/.config/bash/prompt.sh' >> ~/.bashrc
