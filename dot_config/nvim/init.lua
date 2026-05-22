@@ -35,6 +35,64 @@ if not vim.loop.fs_stat(lazypath) then
 end
 vim.opt.rtp:prepend(lazypath)
 
+require("lazy").setup({
+  -- 1. Syntax Highlighting (Makes code colorful)
+  {
+    "nvim-treesitter/nvim-treesitter",
+    build = ":TSUpdate",
+    config = function()
+      require("nvim-treesitter.configs").setup({
+        ensure_installed = { "lua", "python", "html", "css" }, -- Add languages you use
+        highlight = { enable = true },
+        indent = { enable = true },
+      })
+    end,
+  },
+
+  -- 2. Telescope (The best file finder)
+  {
+    "nvim-telescope/telescope.nvim",
+    dependencies = { "nvim-lua/plenary.nvim" },
+    config = function()
+      local builtin = require('telescope.builtin')
+      -- Map Ctrl+p to find files
+      vim.keymap.set('n', '<leader>p', builtin.find_files, {})
+    end,
+  },
+
+  -- 3. Which-Key (Shows you available shortcuts)
+  {
+    "folke/which-key.nvim",
+    event = "VeryLazy",
+    init = function()
+      vim.o.timeout = true
+      vim.o.timeoutlen = 500
+    end,
+    opts = {
+      -- Your settings here
+    }
+  },
+
+  -- 4. LSP Config (Makes Neovim smart/autocomplete)
+  -- UPDATED FOR NEOVIM 0.11+
+  {
+    "neovim/nvim-lspconfig",
+    config = function()
+      -- Use the new vim.lsp.config syntax
+      vim.lsp.config("lua_ls", {})
+    end,
+  },
+  
+  -- 5. Lualine (A pretty status bar at the bottom)
+  {
+    "nvim-lualine/lualine.nvim",
+    dependencies = { "nvim-tree/nvim-web-devicons" },
+    config = function()
+      require("lualine").setup({})
+    end,
+  },
+})
+
 vim.opt.number = true          -- Show line numbers
 vim.opt.relativenumber = true  -- Show relative line numbers
 vim.opt.tabstop = 4            -- Number of spaces a tab counts for
