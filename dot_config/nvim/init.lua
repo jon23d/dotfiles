@@ -1,3 +1,26 @@
+-- Check if Neovim is running on a remote server over SSH
+if vim.env.SSH_TTY ~= nil then
+  -- Force clean OSC 52 for headless SSH/Docker sessions
+  vim.g.clipboard = {
+    name = 'OSC 52 Native',
+    copy = {
+      ['+'] = require('vim.ui.clipboard.osc52').copy('+'),
+      ['*'] = require('vim.ui.clipboard.osc52').copy('*'),
+    },
+    paste = {
+      ['+'] = require('vim.ui.clipboard.osc52').paste('+'),
+      ['*'] = require('vim.ui.clipboard.osc52').paste('*'),
+    },
+  }
+else
+  -- Locally on macOS (or a Linux desktop), leave vim.g.clipboard unset.
+  -- Neovim will automatically pick pbcopy/pbpaste or xclip instantly.
+  vim.g.clipboard = nil
+end
+
+-- Map standard yanks and pastes to the active clipboard provider
+vim.opt.clipboard = "unnamedplus"
+
 -- Bootstrap lazy.nvim
 local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
 if not vim.loop.fs_stat(lazypath) then
@@ -11,15 +34,6 @@ if not vim.loop.fs_stat(lazypath) then
   })
 end
 vim.opt.rtp:prepend(lazypath)
-
--- Specify your plugins in a separate folder or directly here
-require("lazy").setup({
-  "folke/tokyonight.nvim",
-  {
-    "nvim-telescope/telescope.nvim",
-    dependencies = { "nvim-lua/plenary.nvim" }
-  }
-})
 
 vim.opt.number = true          -- Show line numbers
 vim.opt.relativenumber = true  -- Show relative line numbers
