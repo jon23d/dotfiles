@@ -233,3 +233,8 @@ vim.opt.signcolumn     = "yes"  -- Prevents layout shift when LSP adds signs
 vim.opt.confirm        = true   -- Ask to save unsaved changes
 vim.opt.conceallevel   = 2
 
+-- Complete up to the longest common match, then show a menu of choices
+vim.o.wildmode = "longest:full,full"
+
+-- Display the command-line completion choices as a modern pop-up menu
+vim.o.wildoptions = "pum"
