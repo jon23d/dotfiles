@@ -169,6 +169,29 @@ require("lazy").setup({
     end,
   },
 
+  -- 10. Bufferline (show open buffers)
+  {
+    "akinsho/bufferline.nvim",
+    dependencies = { "nvim-tree/nvim-web-devicons" },
+    config = function()
+      require("bufferline").setup({
+          options = {
+            offsets = {
+              {
+                filetype = "neo-tree",
+                text = "File Explorer",
+                highlight = "Directory",
+                separator = true,
+              },
+            },
+          },
+        })
+      -- Navigate buffers like tabs
+      vim.keymap.set("n", "<Tab>",   ":BufferLineCycleNext<CR>", { desc = "Next buffer" })
+      vim.keymap.set("n", "<S-Tab>", ":BufferLineCyclePrev<CR>", { desc = "Prev buffer" })
+    end,
+  },
+
 })
 
 -- =============================================================================
