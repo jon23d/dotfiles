@@ -88,82 +88,7 @@ require("lazy").setup({
     opts = {},
   },
 
-  -- 5. Mason (LSP server installer)
-  {
-    "williamboman/mason.nvim",
-    config = function()
-      require("mason").setup()
-    end,
-  },
-
-  -- 6. Mason-LSPConfig bridge (auto-installs and wires up servers)
-  {
-    "williamboman/mason-lspconfig.nvim",
-    dependencies = {
-      "williamboman/mason.nvim",
-      "neovim/nvim-lspconfig",
-    },
-    config = function()
-      require("mason-lspconfig").setup({
-        ensure_installed = { "lua_ls", "pyright" },
-        automatic_installation = true,
-      })
-
-      -- New 0.11+ syntax: vim.lsp.config instead of lspconfig.xxx.setup()
-      vim.lsp.config("lua_ls", {
-          settings = {
-            Lua = {
-              diagnostics = {
-                globals = { "vim" },  -- tell lua_ls that 'vim' is a known global
-              },
-              workspace = {
-                library = vim.api.nvim_get_runtime_file("", true),  -- know about neovim's API
-                checkThirdParty = false,
-              },
-            },
-          },
-        })
-
-      vim.lsp.config("pyright", {})
-
-      vim.lsp.enable({ "lua_ls", "pyright" })
-    end,
-  },
-  -- 7. Autocompletion
-  {
-    "hrsh7th/nvim-cmp",
-    dependencies = {
-      "hrsh7th/cmp-nvim-lsp",
-      "hrsh7th/cmp-buffer",
-      "L3MON4D3/LuaSnip",
-      "saadparwaiz1/cmp_luasnip",
-    },
-    config = function()
-      local cmp = require("cmp")
-      local luasnip = require("luasnip")
-      cmp.setup({
-        snippet = {
-          expand = function(args)
-            luasnip.lsp_expand(args.body)
-          end,
-        },
-        mapping = cmp.mapping.preset.insert({
-          ["<Tab>"]     = cmp.mapping.select_next_item(),
-          ["<S-Tab>"]   = cmp.mapping.select_prev_item(),
-          ["<CR>"]      = cmp.mapping.confirm({ select = true }),
-          ["<C-Space>"] = cmp.mapping.complete(),
-          ["<C-e>"]     = cmp.mapping.abort(),
-        }),
-        sources = cmp.config.sources({
-          { name = "nvim_lsp" },
-          { name = "luasnip" },
-          { name = "buffer" },
-        }),
-      })
-    end,
-  },
-
-  -- 8. Lualine (status bar)
+  -- 5. Lualine (status bar)
   {
     "nvim-lualine/lualine.nvim",
     dependencies = { "nvim-tree/nvim-web-devicons" },
@@ -172,7 +97,7 @@ require("lazy").setup({
     end,
   },
 
-  -- 9. Neo-tree (file explorer)
+  -- 6. Neo-tree (file explorer)
   {
     "nvim-neo-tree/neo-tree.nvim",
     dependencies = {
@@ -186,7 +111,7 @@ require("lazy").setup({
     end,
   },
 
-  -- 10. Bufferline (show open buffers)
+  -- 7. Bufferline (show open buffers)
   {
     "akinsho/bufferline.nvim",
     dependencies = { "nvim-tree/nvim-web-devicons" },
@@ -206,6 +131,40 @@ require("lazy").setup({
       -- Navigate buffers like tabs
       vim.keymap.set("n", "<Tab>",   ":BufferLineCycleNext<CR>", { desc = "Next buffer" })
       vim.keymap.set("n", "<S-Tab>", ":BufferLineCyclePrev<CR>", { desc = "Prev buffer" })
+    end,
+  },
+
+  {
+    "epwalsh/obsidian.nvim",
+    version = "*",
+    lazy = true,
+    ft = "markdown",
+    dependencies = {
+      "nvim-lua/plenary.nvim",
+      "nvim-telescope/telescope.nvim",
+    },
+    config = function()
+      require("obsidian").setup({
+        workspaces = {
+          {
+            name = "personal",
+            path = "~/vimwiki",
+          },
+        },
+        picker = {
+          name = "telescope.nvim",
+        },
+        daily_notes = {
+          folder = "Journal",
+          date_format = "%Y/%m - %B/%d - %A",
+        },
+        follow_url_func = function(url)
+          vim.fn.jobstart({"open", url})
+        end,
+        ui = {
+          enable = true,
+        },
+      })
     end,
   },
 
@@ -229,7 +188,6 @@ vim.opt.wrap           = false
 vim.opt.swapfile       = false
 vim.opt.undofile       = true   -- Persistent undo history across sessions
 vim.opt.cursorline     = true
-vim.opt.signcolumn     = "yes"  -- Prevents layout shift when LSP adds signs
 vim.opt.confirm        = true   -- Ask to save unsaved changes
 vim.opt.conceallevel   = 2
 
