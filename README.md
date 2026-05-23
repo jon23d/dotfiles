@@ -17,3 +17,7 @@ chezmoi init --apply jon23d
 2. `chezmoi add path/to/file_or_folder`
 3. `chezmoi cd`
 4. commit / push
+
+## Neovim reuquirements
+- node
+- ripgrep

@@ -1,6 +1,7 @@
--- Check if Neovim is running on a remote server over SSH
+-- =============================================================================
+-- CLIPBOARD
+-- =============================================================================
 if vim.env.SSH_TTY ~= nil then
-  -- Force clean OSC 52 for headless SSH/Docker sessions
   vim.g.clipboard = {
     name = 'OSC 52 Native',
     copy = {
@@ -13,54 +14,67 @@ if vim.env.SSH_TTY ~= nil then
     },
   }
 else
-  -- Locally on macOS (or a Linux desktop), leave vim.g.clipboard unset.
-  -- Neovim will automatically pick pbcopy/pbpaste or xclip instantly.
   vim.g.clipboard = nil
 end
-
--- Map standard yanks and pastes to the active clipboard provider
 vim.opt.clipboard = "unnamedplus"
 
--- Bootstrap lazy.nvim
+-- =============================================================================
+-- BOOTSTRAP LAZY.NVIM
+-- =============================================================================
 local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
-if not vim.loop.fs_stat(lazypath) then
+if not vim.uv.fs_stat(lazypath) then
   vim.fn.system({
-    "git",
-    "clone",
-    "--filter=blob:none",
+    "git", "clone", "--filter=blob:none",
     "https://github.com/folke/lazy.nvim.git",
-    "--branch=stable", -- latest stable release
+    "--branch=stable",
     lazypath,
   })
 end
 vim.opt.rtp:prepend(lazypath)
 
+-- =============================================================================
+-- PLUGINS
+-- =============================================================================
 require("lazy").setup({
-  -- 1. Syntax Highlighting (Makes code colorful)
+
+  -- 1. Colorscheme (load first so everything looks right)
   {
-    "nvim-treesitter/nvim-treesitter",
-    build = ":TSUpdate",
+    "folke/tokyonight.nvim",
+    lazy = false,
+    priority = 1000,
     config = function()
-      require("nvim-treesitter.configs").setup({
-        ensure_installed = { "lua", "python", "html", "css" }, -- Add languages you use
-        highlight = { enable = true },
-        indent = { enable = true },
-      })
+      vim.cmd("colorscheme tokyonight-night")
     end,
   },
 
-  -- 2. Telescope (The best file finder)
+  -- 2. Treesitter (syntax highlighting)
+  {
+    "nvim-treesitter/nvim-treesitter",
+    build = ":TSUpdate",
+    lazy = false,
+    main = "nvim-treesitter.config",
+    opts = {
+      ensure_installed = { "lua", "python", "html", "css", "bash", "markdown" },
+      auto_install = true,
+      sync_install = false,
+      highlight = { enable = true },
+      indent = { enable = true },
+    },
+  },
+
+  -- 3. Telescope (fuzzy file finder)
   {
     "nvim-telescope/telescope.nvim",
     dependencies = { "nvim-lua/plenary.nvim" },
     config = function()
       local builtin = require('telescope.builtin')
-      -- Map Ctrl+p to find files
-      vim.keymap.set('n', '<leader>p', builtin.find_files, {})
+      vim.keymap.set('n', '<leader>p', builtin.find_files, { desc = "Find files" })
+      vim.keymap.set('n', '<leader>fg', builtin.live_grep,  { desc = "Live grep" })
+      vim.keymap.set('n', '<leader>fb', builtin.buffers,    { desc = "Find buffers" })
     end,
   },
 
-  -- 3. Which-Key (Shows you available shortcuts)
+  -- 4. Which-Key (shortcut hints)
   {
     "folke/which-key.nvim",
     event = "VeryLazy",
@@ -68,40 +82,111 @@ require("lazy").setup({
       vim.o.timeout = true
       vim.o.timeoutlen = 500
     end,
-    opts = {
-      -- Your settings here
-    }
+    opts = {},
   },
 
-  -- 4. LSP Config (Makes Neovim smart/autocomplete)
-  -- UPDATED FOR NEOVIM 0.11+
+  -- 5. Mason (LSP server installer)
   {
-    "neovim/nvim-lspconfig",
+    "williamboman/mason.nvim",
     config = function()
-      -- Use the new vim.lsp.config syntax
-      vim.lsp.config("lua_ls", {})
+      require("mason").setup()
     end,
   },
-  
-  -- 5. Lualine (A pretty status bar at the bottom)
+
+  -- 6. Mason-LSPConfig bridge (auto-installs and wires up servers)
+  {
+    "williamboman/mason-lspconfig.nvim",
+    dependencies = {
+      "williamboman/mason.nvim",
+      "neovim/nvim-lspconfig",
+    },
+    config = function()
+      require("mason-lspconfig").setup({
+        ensure_installed = { "lua_ls", "pyright" },
+        automatic_installation = true,
+      })
+
+      -- New 0.11+ syntax: vim.lsp.config instead of lspconfig.xxx.setup()
+      vim.lsp.config("lua_ls", {})
+      vim.lsp.config("pyright", {})
+
+      vim.lsp.enable({ "lua_ls", "pyright" })
+    end,
+  },
+  -- 7. Autocompletion
+  {
+    "hrsh7th/nvim-cmp",
+    dependencies = {
+      "hrsh7th/cmp-nvim-lsp",
+      "hrsh7th/cmp-buffer",
+      "L3MON4D3/LuaSnip",
+      "saadparwaiz1/cmp_luasnip",
+    },
+    config = function()
+      local cmp = require("cmp")
+      local luasnip = require("luasnip")
+      cmp.setup({
+        snippet = {
+          expand = function(args)
+            luasnip.lsp_expand(args.body)
+          end,
+        },
+        mapping = cmp.mapping.preset.insert({
+          ["<Tab>"]     = cmp.mapping.select_next_item(),
+          ["<S-Tab>"]   = cmp.mapping.select_prev_item(),
+          ["<CR>"]      = cmp.mapping.confirm({ select = true }),
+          ["<C-Space>"] = cmp.mapping.complete(),
+          ["<C-e>"]     = cmp.mapping.abort(),
+        }),
+        sources = cmp.config.sources({
+          { name = "nvim_lsp" },
+          { name = "luasnip" },
+          { name = "buffer" },
+        }),
+      })
+    end,
+  },
+
+  -- 8. Lualine (status bar)
   {
     "nvim-lualine/lualine.nvim",
     dependencies = { "nvim-tree/nvim-web-devicons" },
     config = function()
-      require("lualine").setup({})
+      require("lualine").setup({ options = { theme = "tokyonight" } })
     end,
   },
+
+  -- 9. Neo-tree (file explorer)
+  {
+    "nvim-neo-tree/neo-tree.nvim",
+    dependencies = {
+      "nvim-lua/plenary.nvim",
+      "nvim-tree/nvim-web-devicons",
+      "MunifTanjim/nui.nvim",
+    },
+    config = function()
+      vim.keymap.set("n", "<leader>e", ":Neotree toggle<CR>", { desc = "Toggle file tree" })
+    end,
+  },
+
 })
 
-vim.opt.number = true          -- Show line numbers
-vim.opt.relativenumber = true  -- Show relative line numbers
-vim.opt.tabstop = 4            -- Number of spaces a tab counts for
-vim.opt.shiftwidth = 4         -- Size of an indent
-vim.opt.expandtab = true       -- Use spaces instead of tabs
-vim.opt.smartcase = true       -- Case-sensitive search if it contains uppercase
-vim.opt.ignorecase = true      -- Case-insensitive search
-vim.opt.termguicolors = true   -- Enable 24-bit RGB colors
-vim.opt.scrolloff = 999
-vim.opt.splitbelow = true
-vim.opt.splitright = true
-
+-- =============================================================================
+-- OPTIONS
+-- =============================================================================
+vim.opt.number         = true   -- Absolute line number on current line
+vim.opt.relativenumber = true   -- Relative numbers on all other lines
+vim.opt.tabstop        = 4
+vim.opt.shiftwidth     = 4
+vim.opt.expandtab      = true
+vim.opt.smartcase      = true
+vim.opt.ignorecase     = true
+vim.opt.termguicolors  = true
+vim.opt.scrolloff      = 999    -- Keep cursor vertically centered
+vim.opt.splitbelow     = true
+vim.opt.splitright     = true
+vim.opt.wrap           = false
+vim.opt.swapfile       = false
+vim.opt.undofile       = true   -- Persistent undo history across sessions
+vim.opt.cursorline     = true
+vim.opt.signcolumn     = "yes"  -- Prevents layout shift when LSP adds signs
