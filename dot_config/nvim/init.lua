@@ -107,7 +107,20 @@ require("lazy").setup({
       })
 
       -- New 0.11+ syntax: vim.lsp.config instead of lspconfig.xxx.setup()
-      vim.lsp.config("lua_ls", {})
+      vim.lsp.config("lua_ls", {
+          settings = {
+            Lua = {
+              diagnostics = {
+                globals = { "vim" },  -- tell lua_ls that 'vim' is a known global
+              },
+              workspace = {
+                library = vim.api.nvim_get_runtime_file("", true),  -- know about neovim's API
+                checkThirdParty = false,
+              },
+            },
+          },
+        })
+
       vim.lsp.config("pyright", {})
 
       vim.lsp.enable({ "lua_ls", "pyright" })
@@ -213,3 +226,4 @@ vim.opt.swapfile       = false
 vim.opt.undofile       = true   -- Persistent undo history across sessions
 vim.opt.cursorline     = true
 vim.opt.signcolumn     = "yes"  -- Prevents layout shift when LSP adds signs
+vim.opt.confirm        = true   -- Ask to save unsaved changes
