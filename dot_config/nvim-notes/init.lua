@@ -117,19 +117,45 @@ require("lazy").setup({
     dependencies = { "nvim-tree/nvim-web-devicons" },
     config = function()
       require("bufferline").setup({
-          options = {
-            offsets = {
-              {
-                filetype = "neo-tree",
-                text = "File Explorer",
-                highlight = "Directory",
-                separator = true,
-              },
+        options = {
+          offsets = {
+            {
+              filetype = "neo-tree",
+              text = "File Explorer",
+              highlight = "Directory",
+              separator = true,
             },
           },
-        })
+          -- DYNAMIC NAMING LOGIC STARTS HERE --
+          name_formatter = function(buf)
+            local is_markdown = vim.api.nvim_get_option_value('filetype', { buf = buf.bufnr }) == 'markdown'
+            if is_markdown then
+              if vim.api.nvim_buf_is_loaded(buf.bufnr) then
+                local lines = vim.api.nvim_buf_get_lines(buf.bufnr, 0, 15, false)
+                for _, line in ipairs(lines) do
+                  local h1_title = line:match("^#%s+(.+)$")
+                  if h1_title and h1_title ~= "" then
+                    return h1_title
+                  end
+                end
+                for _, line in ipairs(lines) do
+                  local fm_title = line:match("^title:%s*(.+)$")
+                  if fm_title and fm_title ~= "" then
+                    return fm_title:gsub('["\']', '')
+                  end
+                end
+              end
+              local filename = vim.fs.basename(buf.path)
+              return filename:gsub("%.md$", "")
+            end
+            return vim.fs.basename(buf.path)
+          end,
+          -- DYNAMIC NAMING LOGIC ENDS HERE --
+        },
+      })
+
       -- Navigate buffers like tabs
-      vim.keymap.set("n", "<Tab>",   ":BufferLineCycleNext<CR>", { desc = "Next buffer" })
+      vim.keymap.set("n", "<Tab>", ":BufferLineCycleNext<CR>", { desc = "Next buffer" })
       vim.keymap.set("n", "<S-Tab>", ":BufferLineCyclePrev<CR>", { desc = "Prev buffer" })
     end,
   },
@@ -148,15 +174,16 @@ require("lazy").setup({
         workspaces = {
           {
             name = "personal",
-            path = "~/vimwiki",
+            path = "~/notes",
           },
         },
         picker = {
           name = "telescope.nvim",
         },
         daily_notes = {
-          folder = "Journal",
-          date_format = "%Y/%m - %B/%d - %A",
+          folder = "journal",
+          date_format = "%Y-%m-%d",
+          template = "resources/Day Note Template",
         },
         follow_url_func = function(url)
           vim.fn.jobstart({"open", url})
