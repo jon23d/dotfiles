@@ -217,9 +217,15 @@ vim.opt.undofile       = true   -- Persistent undo history across sessions
 vim.opt.cursorline     = true
 vim.opt.confirm        = true   -- Ask to save unsaved changes
 vim.opt.conceallevel   = 2
+vim.opt.linebreak      = true   -- When wrapping, break at word boundaries
+
 
 -- Complete up to the longest common match, then show a menu of choices
 vim.o.wildmode = "longest:full,full"
 
 -- Display the command-line completion choices as a modern pop-up menu
 vim.o.wildoptions = "pum"
+
+-- Additional key maps
+vim.keymap.set('n', '<leader>w', ':set wrap!<CR>', { desc = 'Toggle Wrap' })
+
