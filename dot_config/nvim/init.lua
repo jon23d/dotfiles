@@ -96,21 +96,21 @@ require("lazy").setup({
     end,
   },
 
-  -- 6. Mason-LSPConfig bridge (auto-installs and wires up servers)
-  {
-    "williamboman/mason-lspconfig.nvim",
-    dependencies = {
-      "williamboman/mason.nvim",
-      "neovim/nvim-lspconfig",
-    },
-    config = function()
-      require("mason-lspconfig").setup({
-        ensure_installed = { "lua_ls", "pyright" },
-        automatic_installation = true,
-      })
+-- 6. Mason-LSPConfig bridge (auto-installs and wires up servers)
+    {
+      "williamboman/mason-lspconfig.nvim",
+      dependencies = {
+        "williamboman/mason.nvim",
+        "neovim/nvim-lspconfig",
+      },
+      config = function()
+        require("mason-lspconfig").setup({
+          ensure_installed = { "lua_ls", "pyright", "ts_ls" },
+          automatic_installation = true,
+        })
 
-      -- New 0.11+ syntax: vim.lsp.config instead of lspconfig.xxx.setup()
-      vim.lsp.config("lua_ls", {
+        -- New 0.11+ syntax: vim.lsp.config instead of lspconfig.xxx.setup()
+        vim.lsp.config("lua_ls", {
           settings = {
             Lua = {
               diagnostics = {
@@ -124,11 +124,22 @@ require("lazy").setup({
           },
         })
 
-      vim.lsp.config("pyright", {})
+        vim.lsp.config("pyright", {})
+        vim.lsp.config("ts_ls", {})
 
-      vim.lsp.enable({ "lua_ls", "pyright" })
-    end,
-  },
+        vim.lsp.enable({ "lua_ls", "pyright", "ts_ls" })
+
+        vim.api.nvim_create_autocmd("LspAttach", {
+          callback = function(args)
+            vim.keymap.set("n", "gd",         vim.lsp.buf.definition,   { buffer = args.buf, desc = "Go to definition" })
+            vim.keymap.set("n", "gr",         vim.lsp.buf.references,   { buffer = args.buf, desc = "Go to references" })
+            vim.keymap.set("n", "K",          vim.lsp.buf.hover,        { buffer = args.buf, desc = "Hover docs" })
+            vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename,       { buffer = args.buf, desc = "Rename symbol" })
+            vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action,  { buffer = args.buf, desc = "Code action" })
+          end,
+        })
+      end,
+    },
   -- 7. Autocompletion
   {
     "hrsh7th/nvim-cmp",
@@ -209,6 +220,29 @@ require("lazy").setup({
     end,
   },
 
+  -- 11. Diff view
+  {
+      "sindrets/diffview.nvim",
+      config = function()
+        require("diffview").setup({
+          view = {
+            default = {
+              layout = "diff2_horizontal",
+            },
+          },
+        })
+        vim.keymap.set("n", "<leader>gd", ":DiffviewOpen<CR>", { desc = "Open diffview" })
+        vim.keymap.set("n", "<leader>gq", ":DiffviewClose<CR>", { desc = "Close diffview" })
+      end,
+    },
+  --
+  -- -- 12. Git signs
+  -- {
+  --     "lewis6991/gitsigns.nvim",
+  --     opts = {},
+  --  },
+  --
+
 })
 
 -- =============================================================================
@@ -232,9 +266,8 @@ vim.opt.cursorline     = true
 vim.opt.signcolumn     = "yes"  -- Prevents layout shift when LSP adds signs
 vim.opt.confirm        = true   -- Ask to save unsaved changes
 vim.opt.conceallevel   = 2
+vim.opt.linebreak      = true   -- When wrapping, break at word boundaries
 
--- Complete up to the longest common match, then show a menu of choices
-vim.o.wildmode = "longest:full,full"
+-- Additional key maps
+vim.keymap.set('n', '<leader>w', ':set wrap!<CR>', { desc = 'Toggle Wrap' })
 
--- Display the command-line completion choices as a modern pop-up menu
-vim.o.wildoptions = "pum"
