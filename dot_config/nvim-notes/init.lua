@@ -214,6 +214,19 @@ require("lazy").setup({
     end,
   },
 
+  -- 9. Table Mode (markdown tables)
+    {
+      "dhruvasagar/vim-table-mode",
+      ft = "markdown",
+      config = function()
+        -- Use | corner character for markdown-compatible tables
+        vim.g.table_mode_corner = "|"
+        -- Toggle with <leader>tm
+        vim.keymap.set("n", "<leader>tm", ":TableModeToggle<CR>", { desc = "Toggle table mode" })
+        -- Realign an existing table manually
+        vim.keymap.set("n", "<leader>tr", ":TableModeRealign<CR>", { desc = "Realign table" })
+      end,
+    },
 })
 
 -- =============================================================================
@@ -235,7 +248,7 @@ vim.opt.swapfile       = false
 vim.opt.undofile       = true   -- Persistent undo history across sessions
 vim.opt.cursorline     = true
 vim.opt.confirm        = true   -- Ask to save unsaved changes
-vim.opt.conceallevel   = 2
+vim.opt.conceallevel   = 1
 vim.opt.linebreak      = true   -- When wrapping, break at word boundaries
 
 
