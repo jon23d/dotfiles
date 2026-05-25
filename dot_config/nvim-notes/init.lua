@@ -160,6 +160,8 @@ require("lazy").setup({
     end,
   },
 
+  -- 8. Obsidian Nvim
+
   {
     "epwalsh/obsidian.nvim",
     version = "*",
@@ -183,7 +185,24 @@ require("lazy").setup({
         daily_notes = {
           folder = "journal",
           date_format = "%Y-%m-%d",
-          template = "resources/Day Note Template",
+          template = "daily_note.md",
+        },
+        templates = {
+          folder = "templates", 
+          date_format = "%Y-%m-%d",
+          time_format = "%H:%M",
+          substitutions = {
+                ["date:YYYY-MM-DD"] = function()
+                  return os.date("%Y-%m-%d")
+                end,
+                ["date:dddd, MMMM D, YYYY"] = function()
+                  -- Returns Sunday, May 24, 2026 format
+                  return os.date("%A, %B %d, %Y")
+                end,
+                ["time:HH:mm"] = function()
+                  return os.date("%H:%M")
+                end,
+              },
         },
         follow_url_func = function(url)
           vim.fn.jobstart({"open", url})
@@ -228,4 +247,10 @@ vim.o.wildoptions = "pum"
 
 -- Additional key maps
 vim.keymap.set('n', '<leader>w', ':set wrap!<CR>', { desc = 'Toggle Wrap' })
+
+-- Insert live timestamp insert mode with double ctrl+c
+vim.keymap.set("i", "<C-c><C-c>", function()
+  local time = os.date("%H:%M | ")
+  vim.api.nvim_put({ time }, "c", true, true)
+end, { desc = "Insert current timestamp" })
 
