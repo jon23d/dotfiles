@@ -227,6 +227,20 @@ require("lazy").setup({
         vim.keymap.set("n", "<leader>tr", ":TableModeRealign<CR>", { desc = "Realign table" })
       end,
     },
+
+  -- 10. auto session (remember files opened on start)
+  {
+      "rmagatti/auto-session",
+      lazy = false,
+
+      ---enables autocomplete for opts
+      ---@module "auto-session"
+      ---@type AutoSession.Config
+      opts = {
+        suppressed_dirs = { "~/", "~/Projects", "~/Downloads", "/" },
+        -- log_level = 'debug',
+      },
+    }
 })
 
 -- =============================================================================
@@ -248,9 +262,17 @@ vim.opt.swapfile       = false
 vim.opt.undofile       = true   -- Persistent undo history across sessions
 vim.opt.cursorline     = true
 vim.opt.confirm        = true   -- Ask to save unsaved changes
-vim.opt.conceallevel   = 1
 vim.opt.linebreak      = true   -- When wrapping, break at word boundaries
 
+
+-- Use a conceal level of 2 for obsidian
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "markdown",
+  callback = function()
+    vim.opt_local.conceallevel = 2  -- 1 or 2 both satisfy obsidian; 2 conceals more
+  end,
+  desc = "Set conceallevel for markdown (obsidian.nvim)",
+})
 
 -- Complete up to the longest common match, then show a menu of choices
 vim.o.wildmode = "longest:full,full"
