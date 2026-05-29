@@ -270,4 +270,8 @@ vim.opt.linebreak      = true   -- When wrapping, break at word boundaries
 
 -- Additional key maps
 vim.keymap.set('n', '<leader>w', ':set wrap!<CR>', { desc = 'Toggle Wrap' })
+-- Delete without yanking
+vim.keymap.set('n', 'D', '"_D', { desc = 'Delete to end of line without yanking' })
+vim.keymap.set('n', 'dd', '"_dd', { desc = 'Delete line without yanking' })
+vim.keymap.set('n', 'x', '"_x', { desc = 'Delete character without yanking' })
 
