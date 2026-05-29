@@ -235,13 +235,20 @@ require("lazy").setup({
         vim.keymap.set("n", "<leader>gq", ":DiffviewClose<CR>", { desc = "Close diffview" })
       end,
     },
-  --
-  -- -- 12. Git signs
-  -- {
-  --     "lewis6991/gitsigns.nvim",
-  --     opts = {},
-  --  },
-  --
+
+    -- 10. auto session (remember files opened on start)
+    {
+      "rmagatti/auto-session",
+      lazy = false,
+
+      ---enables autocomplete for opts
+      ---@module "auto-session"
+      ---@type AutoSession.Config
+      opts = {
+        suppressed_dirs = { "~/", "~/Projects", "~/Downloads", "/" },
+        -- log_level = 'debug',
+      },
+    }
 
 })
 

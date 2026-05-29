@@ -289,3 +289,10 @@ vim.keymap.set("i", "<C-c><C-c>", function()
   vim.api.nvim_put({ time }, "c", true, true)
 end, { desc = "Insert current timestamp" })
 
+-- Delete without yanking
+vim.keymap.set('n', 'D', '"_D', { desc = 'Delete to end of line without yanking' })
+vim.keymap.set('n', 'dd', '"_dd', { desc = 'Delete line without yanking' })
+vim.keymap.set('n', 'x', '"_x', { desc = 'Delete character without yanking' })
+
+
+
