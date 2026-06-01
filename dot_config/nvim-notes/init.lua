@@ -257,7 +257,30 @@ require("lazy").setup({
         --   If not available, we use `mini` as the fallback
         "rcarriga/nvim-notify",
         }
-    }
+    },
+
+    {
+      "hrsh7th/nvim-cmp",
+      dependencies = {
+        "hrsh7th/cmp-buffer",   -- word completions from buffer
+      },
+      config = function()
+        local cmp = require("cmp")
+        cmp.setup({
+          sources = cmp.config.sources({
+            { name = "obsidian" },       -- [[ link completions
+            { name = "obsidian_new" },   -- create new note from [[ 
+            { name = "obsidian_tags" },  -- # tag completions
+          }),
+          mapping = cmp.mapping.preset.insert({
+            ["<C-Space>"] = cmp.mapping.complete(),
+            ["<CR>"]      = cmp.mapping.confirm({ select = true }),
+            ["<Tab>"]     = cmp.mapping.select_next_item(),
+            ["<S-Tab>"]   = cmp.mapping.select_prev_item(),
+          }),
+        })
+      end,
+    },
 })
 
 -- =============================================================================
