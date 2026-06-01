@@ -89,11 +89,21 @@ require("lazy").setup({
   },
 
   -- 5. Lualine (status bar)
-  {
+ {
     "nvim-lualine/lualine.nvim",
     dependencies = { "nvim-tree/nvim-web-devicons" },
     config = function()
-      require("lualine").setup({ options = { theme = "tokyonight" } })
+        require("lualine").setup({
+          options = { theme = "tokyonight" },
+          sections = {
+            lualine_c = {
+              {
+                "filename",
+                path = 3,  -- 3 = absolute path with ~
+              },
+            },
+          },
+        })
     end,
   },
 
@@ -179,6 +189,9 @@ require("lazy").setup({
             path = "~/notes",
           },
         },
+        checkbox = {
+          order = { " ", "/", "x", ">", "!", "-", "?" },
+        },
         picker = {
           name = "telescope.nvim",
         },
@@ -209,6 +222,15 @@ require("lazy").setup({
         end,
         ui = {
           enable = true,
+          checkboxes = {
+            [" "] = { char = "☐", hl_group = "ObsidianTodo" },
+            ["x"] = { char = "✔", hl_group = "ObsidianDone" },
+            [">"] = { char = "▷", hl_group = "ObsidianRightArrow" },
+            ["!"] = { char = "⚠", hl_group = "ObsidianImportant" },
+            ["~"] = { char = "✖", hl_group = "ObsidianTilde" },
+            ["/"] = { char = "◑", hl_group = "ObsidianInProgress" },
+            ["?"] = { char = "？", hl_group = "ObsidianQuestion" },
+          },
         },
       })
     end,
