@@ -70,6 +70,14 @@ require("lazy").setup({
     "nvim-telescope/telescope.nvim",
     dependencies = { "nvim-lua/plenary.nvim" },
     config = function()
+        
+      vim.api.nvim_create_autocmd("User", {
+        pattern = "TelescopePreviewerLoaded",
+        callback = function()
+          vim.wo.wrap = true
+        end,
+      })
+
       local builtin = require('telescope.builtin')
       vim.keymap.set('n', '<leader>p', builtin.find_files, { desc = "Find files" })
       vim.keymap.set('n', '<leader>fg', builtin.live_grep,  { desc = "Live grep" })
