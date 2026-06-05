@@ -202,6 +202,11 @@ require("lazy").setup({
       "MunifTanjim/nui.nvim",
     },
     config = function()
+
+      require("neo-tree").setup({
+        close_if_last_window = true,
+      })
+
       vim.keymap.set("n", "<leader>e", ":Neotree toggle<CR>", { desc = "Toggle file tree" })
       vim.keymap.set("n", "<leader>E", ":Neotree reveal<CR>", { desc = "Reveal file in tree" })
     end,
