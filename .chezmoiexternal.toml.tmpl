@@ -1,0 +1,14 @@
+{{- $version := "v0.26.2" -}}
+{{- $os := .chezmoi.os -}}
+{{- if eq $os "darwin" }}{{ $os = "macos" }}{{ end -}}
+{{- $arch := .chezmoi.arch -}}
+{{- if eq $arch "amd64" }}{{ $arch = "x64" }}{{ end -}}
+
+[".local/bin/tree-sitter"]
+    type = "file"
+    url = "https://github.com/tree-sitter/tree-sitter/releases/download/{{ $version }}/tree-sitter-{{ $os }}-{{ $arch }}.gz"
+    executable = true
+    refreshPeriod = "168h"
+    [".local/bin/tree-sitter".filter]
+        command = "gzip"
+        args = ["-d"]

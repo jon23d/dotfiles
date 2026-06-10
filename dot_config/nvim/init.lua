@@ -65,6 +65,21 @@ require("lazy").setup({
     },
   },
 
+  {
+    "MeanderingProgrammer/treesitter-modules.nvim",
+    dependencies = { "nvim-treesitter/nvim-treesitter" },
+    lazy = false,
+    ---@module "treesitter-modules"
+    ---@type ts.mod.UserConfig
+    opts = {
+      ensure_installed = { "lua", "python", "html", "css", "bash", "markdown", "markdown_inline" },
+      auto_install = true,
+      highlight = { enable = true },
+      indent = { enable = true },
+    },
+  },
+
+
   -- 3. Telescope (fuzzy file finder)
   {
     "nvim-telescope/telescope.nvim",
@@ -136,6 +151,15 @@ require("lazy").setup({
             vim.keymap.set("n", "K",          vim.lsp.buf.hover,        { buffer = args.buf, desc = "Hover docs" })
             vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename,       { buffer = args.buf, desc = "Rename symbol" })
             vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action,  { buffer = args.buf, desc = "Code action" })
+
+            -- expand / shrink selection
+            vim.keymap.set("n", "<M-Up>", function()
+              vim.cmd.normal({ "v", bang = true })
+              vim.lsp.buf.selection_range(1)
+            end, { buffer = args.buf, desc = "Expand selection" })
+            vim.keymap.set("x", "<M-Up>",   function() vim.lsp.buf.selection_range(1)  end, { buffer = args.buf, desc = "Expand selection" })
+            vim.keymap.set("x", "<M-Down>", function() vim.lsp.buf.selection_range(-1) end, { buffer = args.buf, desc = "Shrink selection" })
+
           end,
         })
       end,
