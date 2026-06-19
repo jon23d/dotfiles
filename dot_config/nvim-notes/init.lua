@@ -126,6 +126,32 @@ require("lazy").setup({
     config = function()
       vim.keymap.set("n", "<leader>e", ":Neotree toggle<CR>", { desc = "Toggle file tree" })
       vim.keymap.set("n", "<leader>E", ":Neotree reveal<CR>", { desc = "Reveal file in tree" })
+
+      -- Show file preview when navigating neotree
+      require("neo-tree").setup({
+          filesystem = {
+            window = {
+              mappings = {
+                -- Overwrite j to move down and preview
+                ["j"] = function(state)
+                  vim.cmd("normal! j")
+                  local node = state.tree:get_node()
+                  if node and node.type == "file" then
+                    require("neo-tree.sources.manager").get_state("filesystem").commands.toggle_preview(state)
+                  end
+                end,
+                -- Overwrite k to move up and preview
+                ["k"] = function(state)
+                  vim.cmd("normal! k")
+                  local node = state.tree:get_node()
+                  if node and node.type == "file" then
+                    require("neo-tree.sources.manager").get_state("filesystem").commands.toggle_preview(state)
+                  end
+                end,
+              }
+            }
+          }
+        })
     end,
   },
 
