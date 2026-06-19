@@ -219,47 +219,21 @@ require("lazy").setup({
 
   -- 9. Neo-tree (file explorer)
   {
-    "nvim-neo-tree/neo-tree.nvim",
-    dependencies = {
-      "nvim-lua/plenary.nvim",
-      "nvim-tree/nvim-web-devicons",
-      "MunifTanjim/nui.nvim",
+      "nvim-neo-tree/neo-tree.nvim",
+      dependencies = {
+        "nvim-lua/plenary.nvim",
+        "nvim-tree/nvim-web-devicons",
+        "MunifTanjim/nui.nvim",
+      },
+      config = function()
+        require("neo-tree").setup({
+          close_if_last_window = true,
+        })
+        vim.keymap.set("n", "<leader>e", ":Neotree toggle<CR>", { desc = "Toggle file tree" })
+        vim.keymap.set("n", "<leader>E", ":Neotree reveal<CR>", { desc = "Reveal file in tree" })
+      end,
     },
-    config = function()
 
-      require("neo-tree").setup({
-        close_if_last_window = true,
-
-        -- Show a file preview when navigating neotree
-        filesystem = {
-            window = {
-              mappings = {
-                -- Overwrite j to move down and preview
-                ["j"] = function(state)
-                  vim.cmd("normal! j")
-                  local node = state.tree:get_node()
-                  if node and node.type == "file" then
-                    require("neo-tree.sources.manager").get_state("filesystem").commands.toggle_preview(state)
-                  end
-                end,
-
-                -- Overwrite k to move up and preview
-                ["k"] = function(state)
-                  vim.cmd("normal! k")
-                  local node = state.tree:get_node()
-                  if node and node.type == "file" then
-                    require("neo-tree.sources.manager").get_state("filesystem").commands.toggle_preview(state)
-                  end
-                end,
-              }
-            }
-          }
-      })
-
-      vim.keymap.set("n", "<leader>e", ":Neotree toggle<CR>", { desc = "Toggle file tree" })
-      vim.keymap.set("n", "<leader>E", ":Neotree reveal<CR>", { desc = "Reveal file in tree" })
-    end,
-  },
 
   -- 10. Bufferline (show open buffers)
   {
