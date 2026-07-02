@@ -1,26 +1,4 @@
-__prompt_machine_colors() {
-    local user
-    user=$(id -un)
-    if [ "${EUID:-$(id -u)}" = "0" ] || [ "$user" = "root" ]; then
-        echo "160 226"   # red bg, yellow fg
-    elif [ "$(uname)" = "Darwin" ]; then
-        echo "119 22"    # light green bg, dark green fg
-    elif [ "$user" = "ubuntu" ]; then
-        echo "33 255"    # blue bg, white fg
-    else
-        echo "220 94"    # golden yellow bg, dark amber fg
-    fi
-}
-
-__prompt_git() {
-    local branch
-    branch=$(git symbolic-ref --short HEAD 2>/dev/null) || return
-    local dirty=""
-    if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-        dirty=" ✱"
-    fi
-    printf " %s%s " "$branch" "$dirty"
-}
+. "$HOME/.config/shell/prompt_common.sh"
 
 __build_ps1() {
     local sep=''
@@ -35,10 +13,13 @@ __build_ps1() {
     local git_text
     git_text=$(__prompt_git)
 
+    local micon
+    micon=$(__prompt_machine_icon)
+
     local ps1=""
 
     # Machine
-    ps1+="\[\e[38;5;${mfg}m\]\[\e[48;5;${mbg}m\] \h "
+    ps1+="\[\e[38;5;${mfg}m\]\[\e[48;5;${mbg}m\] ${micon} \h "
     # Arrow: machine -> user
     ps1+="\[\e[38;5;${mbg}m\]\[\e[48;5;${ubg}m\]${sep}"
     # User
