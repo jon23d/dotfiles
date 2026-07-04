@@ -1,4 +1,3 @@
-[ -f "$HOME/.config/zsh/prompt.zsh" ] && source "$HOME/.config/zsh/prompt.zsh"
 [ -f "$HOME/.config/shell/aliases.sh" ] && source "$HOME/.config/shell/aliases.sh"
 
 for _p in \
@@ -9,7 +8,7 @@ do
     [ -f "$_p" ] && source "$_p" && break
 done
 
-# zsh-syntax-highlighting must be sourced last
+# zsh-syntax-highlighting must be sourced last among the plugins
 for _p in \
     /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
     /usr/local/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
@@ -18,3 +17,7 @@ do
     [ -f "$_p" ] && source "$_p" && break
 done
 unset _p
+
+# prompt.zsh registers a precmd hook; source it last so it has the final
+# say over $PROMPT regardless of what the plugins' own precmd hooks do
+[ -f "$HOME/.config/zsh/prompt.zsh" ] && source "$HOME/.config/zsh/prompt.zsh"
