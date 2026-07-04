@@ -46,6 +46,7 @@ __build_prompt() {
 
     prompt+=" "
     PROMPT="$prompt"
+    export PROMPT=PROMPT
 }
 
 precmd_functions+=(__build_prompt)
