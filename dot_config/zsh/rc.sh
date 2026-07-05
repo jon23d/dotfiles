@@ -35,3 +35,6 @@ ZSH_HIGHLIGHT_STYLES[globbing]='fg=cyan,bold'
 # prompt.zsh registers a precmd hook; source it last so it has the final
 # say over $PROMPT regardless of what the plugins' own precmd hooks do
 [ -f "$HOME/.config/zsh/prompt.zsh" ] && source "$HOME/.config/zsh/prompt.zsh"
+
+# Add opencode binary
+export PATH=/home/jon23d/.opencode/bin:$PATH
