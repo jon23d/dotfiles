@@ -1,4 +1,5 @@
 [ -f "$HOME/.config/shell/aliases.sh" ] && source "$HOME/.config/shell/aliases.sh"
+[ -f "$HOME/.config/secrets.env" ] && source "$HOME/.config/secrets.env"
 
 for _p in \
     /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
