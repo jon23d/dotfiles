@@ -10,10 +10,10 @@ read D_USED D_TOT D_PCT <<< $(df -k / | awk 'NR==2 {printf "%.0f %.0f %s", $3/10
 # 3. Memory Usage (using free)
 read M_USED M_TOT M_PCT <<< $(free -m | awk 'NR==2 {printf "%.1f %.0f %.0f", $3/1024, $2/1024, ($3/$2)*100}')
 
-# 4. Color Logic (turns red at 80% or higher)
-[ "$CPU_PCT" -ge 80 ] && C_CPU="#[fg=red,bold]" || C_CPU="#[fg=white]"
-[ "$D_PCT" -ge 80 ]   && C_DSK="#[fg=red,bold]" || C_DSK="#[fg=white]"
-[ "$M_PCT" -ge 80 ]   && C_MEM="#[fg=red,bold]" || C_MEM="#[fg=white]"
+# 4. Color Logic (each metric gets a distinct color; turns red at 80% or higher)
+[ "$CPU_PCT" -ge 80 ] && C_CPU="#[fg=#BF3100,bold]" || C_CPU="#[fg=#8EA604]"
+[ "$D_PCT" -ge 80 ]   && C_DSK="#[fg=#FF4E00,bold]" || C_DSK="#[fg=#F5BB00]"
+[ "$M_PCT" -ge 80 ]   && C_MEM="#[fg=#BF3100,bold]" || C_MEM="#[fg=#EC9F05]"
 
 BULLET="#[fg=colour244] • "
 
