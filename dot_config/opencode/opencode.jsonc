@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "gitea-mcp": {
+      "enabled": true,
+      "type": "local",
+      "command": [
+        "gitea-mcp",
+        "-t", "stdio",
+        "-H", "https://git.jon23d.com",
+        "-T", "{env:GITEA_MCP_TOKEN}"
+      ]
+    }
+    }
+}
