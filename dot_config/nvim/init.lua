@@ -50,21 +50,18 @@ require("lazy").setup({
     end,
   },
 
-  -- 2. Treesitter (syntax highlighting)
+  -- 2. Treesitter (parsers + queries only).
+  -- On the `main` branch this is a full rewrite: no highlight/indent/ensure_installed
+  -- here. Feature activation is handled by treesitter-modules below.
   {
     "nvim-treesitter/nvim-treesitter",
+    branch = "main",
     build = ":TSUpdate",
     lazy = false,
-    main = "nvim-treesitter.config",
-    opts = {
-      ensure_installed = { "lua", "python", "html", "css", "bash", "markdown" },
-      auto_install = true,
-      sync_install = false,
-      highlight = { enable = true },
-      indent = { enable = true },
-    },
   },
 
+  -- 2b. Treesitter modules (restores highlight/indent/etc. on the main branch).
+  -- This is what actually installs parsers and turns on indent-as-you-type.
   {
     "MeanderingProgrammer/treesitter-modules.nvim",
     dependencies = { "nvim-treesitter/nvim-treesitter" },
@@ -72,7 +69,11 @@ require("lazy").setup({
     ---@module "treesitter-modules"
     ---@type ts.mod.UserConfig
     opts = {
-      ensure_installed = { "lua", "python", "html", "css", "bash", "markdown", "markdown_inline" },
+      ensure_installed = {
+        "lua", "python", "html", "css", "bash",
+        "markdown", "markdown_inline",
+        "json", "jsonc",
+      },
       auto_install = true,
       highlight = { enable = true },
       indent = { enable = true },
@@ -198,6 +199,22 @@ require("lazy").setup({
     end,
   },
 
+  -- 7b. Autopairs (IntelliJ-style: <CR> between {} splits onto its own indented line).
+  -- The indent of the new middle line comes from treesitter's indentexpr.
+  {
+    "windwp/nvim-autopairs",
+    event = "InsertEnter",
+    dependencies = { "hrsh7th/nvim-cmp" },
+    config = function()
+      require("nvim-autopairs").setup({})
+      -- keep cmp's <CR> confirm working, and auto-insert () after
+      -- confirming a function/method completion
+      local cmp_autopairs = require("nvim-autopairs.completion.cmp")
+      local cmp = require("cmp")
+      cmp.event:on("confirm_done", cmp_autopairs.on_confirm_done())
+    end,
+  },
+
   -- 8. Lualine (status bar)
   {
     "nvim-lualine/lualine.nvim",
@@ -274,7 +291,7 @@ require("lazy").setup({
       end,
     },
 
-    -- 10. auto session (remember files opened on start)
+    -- 12. auto session (remember files opened on start)
     {
       "rmagatti/auto-session",
       lazy = false,
@@ -313,10 +330,20 @@ vim.opt.confirm        = true   -- Ask to save unsaved changes
 vim.opt.conceallevel   = 2
 vim.opt.linebreak      = true   -- When wrapping, break at word boundaries
 
+-- 2 spaces for json indents
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = { "json", "jsonc", "json5" },
+  callback = function()
+    vim.bo.shiftwidth  = 2
+    vim.bo.tabstop     = 2
+    vim.bo.softtabstop = 2
+    vim.bo.expandtab   = true
+  end,
+})
+
 -- Additional key maps
 vim.keymap.set('n', '<leader>w', ':set wrap!<CR>', { desc = 'Toggle Wrap' })
 -- Delete without yanking
 vim.keymap.set('n', 'D', '"_D', { desc = 'Delete to end of line without yanking' })
 vim.keymap.set('n', 'dd', '"_dd', { desc = 'Delete line without yanking' })
 vim.keymap.set('n', 'x', '"_x', { desc = 'Delete character without yanking' })
-
