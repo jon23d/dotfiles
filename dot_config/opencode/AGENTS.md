@@ -24,3 +24,13 @@ See the skill itself
 protocol, scope taxonomy, and write-timing rules. If the current repo has no
 `memory.manifest.yaml`, follow the skill's own **Bootstrapping a new repo**
 section before anything else.
+
+## Always write learnings before concluding
+
+Before reporting completion, write any durable learnings — failures with root
+causes, non-obvious procedures, architecture surprises, or dependency gotchas
+— to working-memory. Use `basic-memory_search_notes` first to avoid
+duplicates; use `basic-memory_write_note` (or `basic-memory_edit_note` to
+refine an existing entry). Do not store anything already documented in code,
+tests, repo docs, or Outline. This is a mandatory checkpoint, not optional —
+the same way loading at the start is mandatory.
