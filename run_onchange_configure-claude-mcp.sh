@@ -17,6 +17,9 @@ add_server() {
   claude mcp add-json "$name" "$json" --scope user
 }
 
+# mcp-atlassian is launched via `uvx`; install uv if it's missing.
+command -v uvx >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
+
 add_server gitea-mcp '{
   "type": "stdio",
   "command": "gitea-mcp",
@@ -34,4 +37,23 @@ add_server outline '{
 add_server basic-memory '{
   "type": "http",
   "url": "https://memory.jon23d.cc/mcp"
+}'
+
+add_server context7 '{
+  "type": "http",
+  "url": "https://mcp.context7.com/mcp",
+  "headers": {
+    "Authorization": "Bearer ${CONTEXT7_API_TOKEN}"
+  }
+}'
+
+add_server mcp-atlassian '{
+  "type": "stdio",
+  "command": "uvx",
+  "args": ["mcp-atlassian"],
+  "env": {
+    "JIRA_URL": "${JIRA_URL}",
+    "JIRA_USERNAME": "${JIRA_USERNAME}",
+    "JIRA_API_TOKEN": "${JIRA_API_TOKEN}"
+  }
 }'
