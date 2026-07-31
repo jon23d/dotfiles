@@ -1,0 +1,89 @@
+{
+	"$schema": "https://opencode.ai/config.json",
+	"mcp": {
+		"gitea-mcp": {
+			"enabled": true,
+			"type": "local",
+			"command": [
+				"gitea-mcp",
+				"-t", "stdio",
+				"-H", "https://git.jon23d.com",
+				"-T", "{env:GITEA_MCP_TOKEN}"
+			]
+		},
+    "outline": {
+      "type": "remote",
+      "url": "https://wiki.jon23d.cc/mcp",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+          "Authorization": "Bearer {env:OUTLINE_API_KEY}"
+      }
+    },
+    "basic-memory": {
+      "type": "remote",
+      "url": "https://memory.jon23d.cc/mcp",
+      "enabled": true,
+      "oauth": false
+    },
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {env:CONTEXT7_API_TOKEN}"
+      }
+    },
+    "mcp-atlassian": {
+      "enabled": true,
+      "type": "local",
+      "command": ["uvx", "mcp-atlassian"],
+      "environment": {
+        "JIRA_URL": "{env:JIRA_URL}",
+        "JIRA_USERNAME": "{env:JIRA_USERNAME}",
+        "JIRA_API_TOKEN": "{env:JIRA_API_TOKEN}"
+      }
+    }
+	},
+	"provider": {
+		"litellm": {
+			"name": "LiteLLM",
+			"npm": "@ai-sdk/openai-compatible",
+			"models": {
+				"glm-5.2": {
+					"name": "glm-5.2",
+					"limit": {
+						"context": 650000,
+						"output": 100000
+					}
+				},
+				"minimax": {
+					"name": "minimax",
+					"limit": {
+						"context": 196608,
+						"output": 32000
+					}
+				},
+				"qwen3.6-35b": {
+					"name": "qwen3.6-35b",
+					"limit": {
+						"context": 262144,
+						"output": 32000
+					}
+				},
+				"small-model": {
+					"name": "small-model",
+					"limit": {
+						"context": 4096,
+						"output": 2048
+					}
+				}
+			},
+			"options": {
+				"baseURL": "http://192.168.50.113:4000/v1",
+				"apiKey": "{env:LITELLM_KEY}"
+			}
+		}
+	}
+}
