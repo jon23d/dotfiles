@@ -7,22 +7,13 @@
 			"command": [
 				"gitea-mcp",
 				"-t", "stdio",
-				"-H", "https://git.jon23d.com",
+				"-H", "{env:GITEA_URL}",
 				"-T", "{env:GITEA_MCP_TOKEN}"
 			]
 		},
-    "outline": {
-      "type": "remote",
-      "url": "https://wiki.jon23d.cc/mcp",
-      "enabled": true,
-      "oauth": false,
-      "headers": {
-          "Authorization": "Bearer {env:OUTLINE_API_KEY}"
-      }
-    },
     "basic-memory": {
       "type": "remote",
-      "url": "https://memory.jon23d.cc/mcp",
+      "url": "{env:BASIC_MEMORY_URL}",
       "enabled": true,
       "oauth": false
     },
