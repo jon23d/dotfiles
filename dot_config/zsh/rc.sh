@@ -9,6 +9,7 @@ setopt HIST_IGNORE_SPACE
 
 [ -f "$HOME/.config/shell/aliases.sh" ] && source "$HOME/.config/shell/aliases.sh"
 [ -f "$HOME/.config/secrets.env" ] && source "$HOME/.config/secrets.env"
+b[ -f "$HOME/.config/configs.env" ] && source "$HOME/.config/configs.env"
 
 for _p in \
     /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
