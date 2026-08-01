@@ -6,7 +6,7 @@ description: >-
   and their root causes, non-obvious procedures, decisions with rationale, and
   dependency/seam gotchas. USE THIS ON EVERY TICKET — search it before you plan
   or debug, and stage writes as you discover durable facts. This is NOT for
-  product documentation (that lives in Outline) or repo invariants (AGENTS.md).
+  product documentation (that lives in Confluence) or repo invariants (AGENTS.md).
   Trigger whenever you start a ticket, hit an unexpected error, touch a shared
   dependency (Square, Couchbase, R2, pg-boss), or work across a service
   seam — even if the ticket doesn't mention memory.
@@ -26,15 +26,15 @@ mis-filed or speculative fact silently degrades runs you'll never see.
 
 ## The three stores — do not confuse them
 
-- **Outline** — curated product docs (architecture, data-flow topology, feature
+- **Confluence** — curated product docs (architecture, data-flow topology, feature
   specs). Human-owned. You *read* it; you *propose* writes for review. Never
-  duplicate Outline content into memory — link to it.
+  duplicate Confluence content into memory — link to it.
 - **The repo** — invariants, conventions, contracts (AGENTS.md, shared types,
   tests). Enforced. Not memory.
 - **This memory** — the *surprises*: what broke and why, the workaround, the
   ordering constraint, the decision and its rationale.
 
-Authority order on any conflict: **running code > repo/tests > Outline > memory.**
+Authority order on any conflict: **running code > repo/tests > Confluence > memory.**
 Memory is advisory. If memory disagrees with the code, the code is right and the
 memory entry is wrong — fix your work, then correct the entry.
 
@@ -85,14 +85,14 @@ painful fact is not.
   that surprised you and isn't captured by types or tests.
 
 ### NEVER store
-- Anything already in code, tests, repo docs, or Outline. Link to it instead.
+- Anything already in code, tests, repo docs, or Confluence. Link to it instead.
 - **Speculation.** "I think", "might be", "seems like" — if you didn't confirm
   it, it does not go in. Unverified guesses poison more than they help.
 - A contract or type that belongs in shared-types + tests. Store only the
   **delta the types can't express** ("returns 200 with empty body on missing
   tenant; field nullable despite the annotation"), anchored to the artifact.
 - Task-local trivia, ticket status, narration, or secrets/credentials.
-- Data-flow topology as prose. The canonical flow lives in Outline; memory holds
+- Data-flow topology as prose. The canonical flow lives in Confluence; memory holds
   only the *surprises* found while traversing it. Do not reconstruct
   architecture out of scattered memories.
 
