@@ -111,8 +111,10 @@ Applies once a ticket has been refined, regardless of which path it came from. A
 3. **Assign the ticket** to the agent's identity (or the operator's, per your team's convention — verify which before assuming).
 4. **Set the `Agent VM` field** to the hostname of the machine the agent is working from (`hostname` on Linux/macOS), using the field key from `jira.fields.agent_vm` in `.project-management.yml`. If that key is missing from the config, resolve it via MCP once and write it back (see Step 0) rather than guessing or skipping it; if the field genuinely doesn't exist on this project, tell the human.
 5. Transition the ticket to the status in `jira.statuses.in_progress` from the config (defaulting to resolving-and-recording it per Step 0 if that key isn't set yet) -- don't assume it's literally called 'In Progress'.
-6. Do the work. (Governed by your other skills — implementation, testing, PR conventions, etc. Not this skill's job.)
-7. When work is complete, **move the ticket to the status in `jira.statuses.in_review`** from the config (defaulting to resolving-and-recording it per Step 0 if that key isn't set yet) — don't assume it's literally called "In Review".
+6. **Name the branch with the ticket identifier**: `<type>/<TICKET-ID>-<kebab-slug>`, e.g. `feature/ABC-15-update-map-view`. The `<type>/` prefix (`feature/`, `fix/`, `chore/`, etc.) and slug wording follow whatever convention the repo already uses — the ticket-ID-in-branch-name part is this skill's requirement, non-negotiable regardless of repo convention.
+7. Do the work. (Governed by your other skills — implementation, testing, PR review process, etc. Not this skill's job.)
+8. **Open the PR with the ticket identifier at the start of the title**: `<TICKET-ID>: <summary>`, e.g. `ABC-15: Add live color to map view`. This holds regardless of whatever other title/description conventions your other skills specify — the ticket ID prefix is never optional.
+9. When work is complete, **move the ticket to the status in `jira.statuses.in_review`** from the config (defaulting to resolving-and-recording it per Step 0 if that key isn't set yet) — don't assume it's literally called "In Review".
 
 ## Notes on MCP tool usage
 
