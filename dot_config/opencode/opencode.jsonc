@@ -1,5 +1,6 @@
 {
 	"$schema": "https://opencode.ai/config.json",
+  "subagent_depth": 4,
 	"mcp": {
 		"gitea-mcp": {
 			"enabled": true,
