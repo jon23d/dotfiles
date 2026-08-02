@@ -1,0 +1,6 @@
+{{ if ne .chezmoi.os "linux" }}
+# systemd + swap tuning are Linux-only; skip entirely on macOS.
+.local/bin/purge-vitest-tmp.sh
+.config/systemd
+configure-vm-memory.sh
+{{ end }}

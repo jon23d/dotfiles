@@ -1,0 +1,6 @@
+[Unit]
+Description=Purge orphaned Vitest SSR caches from /tmp
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/purge-vitest-tmp.sh

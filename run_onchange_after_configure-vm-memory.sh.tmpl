@@ -1,0 +1,82 @@
+#!/bin/bash
+set -e
+
+# Harden agent VMs against OOM kills that manifest as tmux panes dying.
+#
+# Two independent problems, both needed:
+#
+#   1. Vitest 4 leaks its SSR cache dir (join(tmpdir(), nanoid()), ~20MB/run)
+#      whenever a run dies un-gracefully. Where /tmp is tmpfs that is leaked
+#      RAM, and systemd-tmpfiles only reaps /tmp at 10d. A busy VM leaks
+#      ~700MB/day, so free RAM trends to zero over days. Fixed by the hourly
+#      purge-vitest-tmp.timer installed below.
+#
+#   2. No swap means the kernel's only response to a memory spike is the OOM
+#      killer, which reaps the largest RSS in the tmux scope -- i.e. opencode.
+#      Swap converts a hard kill into a brief slowdown.
+#
+# Re-runs when this script OR either systemd unit changes:
+#   service: {{ include "dot_config/systemd/user/purge-vitest-tmp.service" | sha256sum }}
+#   timer:   {{ include "dot_config/systemd/user/purge-vitest-tmp.timer" | sha256sum }}
+
+[ "$(uname)" = "Linux" ] || exit 0
+command -v systemctl >/dev/null 2>&1 || exit 0
+
+# --- 1. hourly purge of leaked Vitest caches -------------------------------
+systemctl --user daemon-reload
+systemctl --user enable --now purge-vitest-tmp.timer
+
+# Everything below needs root. Never block on a password prompt: `chezmoi
+# apply` is frequently non-interactive, and `set -e` would abort the whole run.
+# The purge timer above is the part that actually stops the leak, so bailing
+# here still leaves the machine better off than before.
+if ! sudo -n true 2>/dev/null; then
+  echo "configure-vm-memory: no passwordless sudo; purge timer enabled, but"
+  echo "configure-vm-memory: skipping swap/linger/sysctl. Re-run 'chezmoi apply'"
+  echo "configure-vm-memory: from a shell with sudo to finish."
+  exit 0
+fi
+
+# Keep the timer firing when no login session is open (headless VMs).
+if [ "$(loginctl show-user "$USER" --property=Linger --value 2>/dev/null)" != "yes" ]; then
+  sudo loginctl enable-linger "$USER"
+fi
+
+# --- 2. swap safety net ----------------------------------------------------
+if [ -n "$(swapon --show --noheadings 2>/dev/null)" ]; then
+  echo "configure-vm-memory: swap already active, leaving it alone"
+else
+  swapfile=/swapfile
+  fstype=$(findmnt -no FSTYPE -T / 2>/dev/null || echo unknown)
+
+  # Swapfiles on btrfs need mkswapfile/NOCOW; not worth guessing here.
+  if [ "$fstype" = "btrfs" ]; then
+    echo "configure-vm-memory: btrfs root, skipping swapfile (create manually)"
+  else
+    ram_mb=$(free -m | awk '/^Mem:/{print $2}')
+    swap_mb=$(( ram_mb < 8192 ? ram_mb : 8192 ))          # match RAM, cap 8G
+    free_mb=$(df -Pm / | awk 'NR==2{print $4}')
+
+    if [ "$free_mb" -lt $(( swap_mb * 2 )) ]; then
+      echo "configure-vm-memory: only ${free_mb}MB free on /, skipping ${swap_mb}MB swapfile"
+    else
+      echo "configure-vm-memory: creating ${swap_mb}MB swapfile at ${swapfile}"
+      sudo rm -f "$swapfile"
+      sudo fallocate -l "${swap_mb}M" "$swapfile" 2>/dev/null \
+        || sudo dd if=/dev/zero of="$swapfile" bs=1M count="$swap_mb" status=none
+      sudo chmod 600 "$swapfile"
+      sudo mkswap "$swapfile" >/dev/null
+      sudo swapon "$swapfile"
+      grep -qF "$swapfile" /etc/fstab \
+        || echo "$swapfile none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
+    fi
+  fi
+fi
+
+# Prefer reclaiming page cache over swapping; swap is a safety net, not a
+# routine tier. Applied even when swap already existed.
+if [ ! -f /etc/sysctl.d/99-agent-vm-memory.conf ]; then
+  printf 'vm.swappiness=10\nvm.vfs_cache_pressure=50\n' \
+    | sudo tee /etc/sysctl.d/99-agent-vm-memory.conf >/dev/null
+  sudo sysctl -q --load=/etc/sysctl.d/99-agent-vm-memory.conf
+fi
