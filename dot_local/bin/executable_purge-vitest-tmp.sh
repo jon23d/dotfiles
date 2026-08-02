@@ -19,6 +19,7 @@ set -euo pipefail
 TMP="${TMPDIR:-/tmp}"
 TMP="${TMP%/}"
 AGE_MIN="${AGE_MIN:-720}"   # 12h; well beyond any active run's idle window
+DRY_RUN="${DRY_RUN:-0}"     # DRY_RUN=1 lists what would go, deletes nothing
 
 # Paths currently referenced by a live process (cwd or open fd) -- never remove.
 mapfile -t LIVE < <(
@@ -31,8 +32,17 @@ while IFS= read -r dir; do
   [ -d "$dir/ssr" ] || continue                        # only Vitest SSR caches
   for l in ${LIVE+"${LIVE[@]}"}; do [ "$dir" = "$l" ] && continue 2; done
   sz=$(du -sm "$dir" 2>/dev/null | cut -f1) || continue
-  rm -rf -- "$dir" && reclaimed=$(( reclaimed + sz ))
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "  would remove ${dir} (${sz}MB, $(date -r "$dir" '+%Y-%m-%d %H:%M'))"
+    reclaimed=$(( reclaimed + sz ))
+  else
+    rm -rf -- "$dir" && reclaimed=$(( reclaimed + sz ))
+  fi
 done < <(find "$TMP" -maxdepth 1 -type d -user "$(id -u)" -mmin "+${AGE_MIN}" \
            -regextype posix-extended -regex "${TMP}/[A-Za-z0-9_-]{21}" 2>/dev/null)
 
-echo "purge-vitest-tmp: reclaimed ${reclaimed}MB from ${TMP}"
+if [ "$DRY_RUN" = "1" ]; then
+  echo "purge-vitest-tmp: would reclaim ${reclaimed}MB from ${TMP} (dry run)"
+else
+  echo "purge-vitest-tmp: reclaimed ${reclaimed}MB from ${TMP}"
+fi
