@@ -50,6 +50,13 @@
 						"output": 100000
 					}
 				},
+        "deepseek-v4-flash": {
+          "name": "deepseek-v4-flash",
+          "limit": {
+            "context": 200000,
+            "output": 184000
+          }
+        },
 				"minimax": {
 					"name": "minimax",
 					"limit": {
