@@ -147,7 +147,7 @@ require("lazy").setup({
           settings = {
             intelephense = {
               stubs = {
-                "apache", "bcmath", "bcompiler", "core", "curl", "date", "dom",
+                "apache", "bcmath", "bcompiler", "Core", "curl", "date", "dom",
                 "fileinfo", "filter", "gd", "gettext", "hash", "iconv", "imap",
                 "intl", "json", "libxml", "mbstring", "mysqli", "openssl", "pcre",
                 "PDO", "pdo_mysql", "pdo_pgsql", "pgsql", "Phar", "readline",
