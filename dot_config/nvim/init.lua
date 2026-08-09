@@ -72,7 +72,7 @@ require("lazy").setup({
       ensure_installed = {
         "lua", "python", "html", "css", "bash",
         "markdown", "markdown_inline",
-        "json", "jsonc",
+        "json", "php"
       },
       auto_install = true,
       highlight = { enable = true },
@@ -121,7 +121,7 @@ require("lazy").setup({
       },
       config = function()
         require("mason-lspconfig").setup({
-          ensure_installed = { "lua_ls", "pyright", "ts_ls" },
+          ensure_installed = { "lua_ls", "pyright", "ts_ls", "intelephense" },
           automatic_installation = true,
         })
 
@@ -143,7 +143,31 @@ require("lazy").setup({
         vim.lsp.config("pyright", {})
         vim.lsp.config("ts_ls", {})
 
-        vim.lsp.enable({ "lua_ls", "pyright", "ts_ls" })
+        vim.lsp.config("intelephense", {
+          settings = {
+            intelephense = {
+              stubs = {
+                "apache", "bcmath", "bcompiler", "core", "curl", "date", "dom",
+                "fileinfo", "filter", "gd", "gettext", "hash", "iconv", "imap",
+                "intl", "json", "libxml", "mbstring", "mysqli", "openssl", "pcre",
+                "PDO", "pdo_mysql", "pdo_pgsql", "pgsql", "Phar", "readline",
+                "redis", "regex", "session", "SimpleXML", "soap", "sockets",
+                "sodium", "standard", "superglobals", "tokenizer", "xml",
+                "xmlreader", "xmlwriter", "yaml", "zip", "zlib",
+              },
+              files = {
+                maxSize = 5000000,
+                associations = { "*.php", "*.blade.php" }
+              },
+              -- Laravel/Inertia stack: helps intelephense find framework globals/facades
+              environment = {
+                includePaths = { "vendor" },
+              },
+            },
+          },
+        })
+
+        vim.lsp.enable({ "lua_ls", "pyright", "ts_ls", "intelephense" })
 
         vim.api.nvim_create_autocmd("LspAttach", {
           callback = function(args)
@@ -303,7 +327,13 @@ require("lazy").setup({
         suppressed_dirs = { "~/", "~/Projects", "~/Downloads", "/" },
         -- log_level = 'debug',
       },
-    }
+    },
+
+    -- 13. Laravel Blade support
+    {
+        "jwalton512/vim-blade",
+        ft = "blade",
+    },
 
 })
 
