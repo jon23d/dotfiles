@@ -23,7 +23,7 @@ command -v uvx >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | s
 add_server gitea-mcp '{
   "type": "stdio",
   "command": "gitea-mcp",
-  "args": ["-t", "stdio", "-H", "https://git.jon23d.com", "-T", "${GITEA_MCP_TOKEN}"]
+  "args": ["-t", "stdio", "-H", "${GITEA_URL}", "-T", "${GITEA_MCP_TOKEN}"]
 }'
 
 add_server outline '{
