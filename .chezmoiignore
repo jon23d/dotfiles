@@ -4,3 +4,9 @@
 .config/systemd
 configure-vm-memory.sh
 {{ end }}
+
+# Local dev artifacts under the control-plane-daemon source tree -- never
+# part of the managed dotfiles; npm install (local or via the run_onchange
+# installer) regenerates these on the target machine.
+.local/share/control-plane-daemon/node_modules
+.local/share/control-plane-daemon/.env
