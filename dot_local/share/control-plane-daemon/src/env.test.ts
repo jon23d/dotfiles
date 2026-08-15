@@ -1,5 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadEnv } from './env.js';
+
+// Without this, vi.stubEnv calls in one test (e.g. an intentionally invalid
+// MATTERMOST_URL) leak into the next test via process.env and make it
+// order-dependent -- tests must be hermetic (see the tdd skill).
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('loadEnv', () => {
   it('parses a valid environment and fills in defaults', () => {
@@ -39,5 +46,23 @@ describe('loadEnv', () => {
     vi.stubEnv('MATTERMOST_URL', 'not-a-url');
 
     expect(() => loadEnv()).toThrow(/MATTERMOST_URL/);
+  });
+
+  it('leaves SESSION_NUMBER_FILE_PATH undefined by default, so index.ts falls back to its own default location', () => {
+    vi.stubEnv('MATTERMOST_MCP_TOKEN', 'tok-123');
+    vi.stubEnv('SESSION_NUMBER_FILE_PATH', undefined);
+
+    const env = loadEnv();
+
+    expect(env.SESSION_NUMBER_FILE_PATH).toBeUndefined();
+  });
+
+  it('honors an override for SESSION_NUMBER_FILE_PATH', () => {
+    vi.stubEnv('MATTERMOST_MCP_TOKEN', 'tok-123');
+    vi.stubEnv('SESSION_NUMBER_FILE_PATH', '/custom/path/session-number.json');
+
+    const env = loadEnv();
+
+    expect(env.SESSION_NUMBER_FILE_PATH).toBe('/custom/path/session-number.json');
   });
 });

@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createDaemon } from './daemon.js';
 import { UNKNOWN_COMMAND_REPLY } from './messageRouter.js';
+import type { HarnessAdapter, HarnessSessionHandle } from './harness.js';
 import type { Logger } from './logger.js';
 import type { MattermostRestClient } from './mattermostRestClient.js';
-import type { SessionStore } from './sessionStore.js';
+import type { SessionRuntimeRegistry } from './sessionRuntime.js';
+import type { Session, SessionStore } from './sessionStore.js';
 import type { MattermostSocketClient, MattermostSocketClientConfig } from './socketClient.js';
 import type { StateStore } from './stateStore.js';
 import type { IncomingPost } from './types.js';
@@ -19,6 +21,9 @@ function fakeRestClient(overrides: Partial<MattermostRestClient> = {}): Mattermo
     getOrCreateDirectChannel: vi.fn().mockResolvedValue('dm-1'),
     createPost: vi.fn().mockResolvedValue(undefined),
     getPostsSince: vi.fn().mockResolvedValue([]),
+    getMyTeams: vi.fn().mockResolvedValue([]),
+    createPrivateChannel: vi.fn().mockResolvedValue('new-channel-id'),
+    addChannelMember: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -38,12 +43,54 @@ function fakeStateStore(overrides: Partial<StateStore> = {}): StateStore {
 function fakeSessionStore(overrides: Partial<SessionStore> = {}): SessionStore {
   return {
     listSessions: vi.fn().mockReturnValue([]),
+    addSession: vi.fn(),
+    findByChannelId: vi.fn().mockReturnValue(undefined),
+    markStopped: vi.fn(),
     ...overrides,
   };
 }
 
 function post(overrides: Partial<IncomingPost> = {}): IncomingPost {
   return { id: 'p1', userId: 'jon-1', channelId: 'dm-1', message: 'list', createAt: 1000, ...overrides };
+}
+
+function fakeSessionRuntime(overrides: Partial<SessionRuntimeRegistry> = {}): SessionRuntimeRegistry {
+  return {
+    register: vi.fn(),
+    get: vi.fn().mockReturnValue(undefined),
+    remove: vi.fn(),
+    ...overrides,
+  };
+}
+
+function fakeHandle(overrides: Partial<HarnessSessionHandle> = {}): HarnessSessionHandle {
+  return {
+    sendPrompt: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn(),
+    onExit: vi.fn(),
+    ...overrides,
+  };
+}
+
+function fakeOpencodeAdapter(overrides: Partial<HarnessAdapter> = {}): HarnessAdapter {
+  return {
+    name: 'opencode',
+    start: vi.fn().mockResolvedValue(fakeHandle()),
+    ...overrides,
+  };
+}
+
+function sessionFixture(overrides: Partial<Session> = {}): Session {
+  return {
+    id: 'sess-1',
+    identifier: '#4 : devsix',
+    host: 'devsix',
+    status: 'running',
+    harness: 'opencode',
+    folder: '/home/jon/project',
+    channelId: 'session-chan-1',
+    ...overrides,
+  };
 }
 
 /** Captures the config createMattermostSocketClient was called with, so
@@ -326,5 +373,157 @@ describe('createDaemon', () => {
     daemon.stop();
 
     expect(socket.client.stop).toHaveBeenCalled();
+  });
+
+  describe('`start` dispatch (KAN-5)', () => {
+    it('runs the start command end-to-end and posts back its reply', async () => {
+      const restClient = fakeRestClient({ getMyTeams: vi.fn().mockResolvedValue([{ id: 'team-1', name: 'devops' }]) });
+      const sessionStore = fakeSessionStore();
+      const socket = fakeSocketClientFactory();
+      const daemon = createDaemon({
+        restClient,
+        stateStore: fakeStateStore(),
+        sessionStore,
+        logger: silentLogger(),
+        operatorEmail: 'jon23d@gmail.com',
+        wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
+        token: 'tok-123',
+        createSocketClient: socket.factory,
+        harnesses: { opencode: fakeOpencodeAdapter() },
+        allocateSessionNumber: vi.fn().mockResolvedValue(4),
+        hostname: 'devsix',
+      });
+      await daemon.start();
+
+      await socket.firePost(post({ message: 'start opencode /home/jon/project' }));
+
+      expect(sessionStore.addSession).toHaveBeenCalled();
+      expect(restClient.createPost).toHaveBeenCalledWith('dm-1', expect.stringContaining('#4 : devsix'));
+    });
+  });
+
+  describe('multi-channel message routing (KAN-5 AC3)', () => {
+    it('forwards a message posted in a running session\'s dedicated channel to that session, not the control plane', async () => {
+      const restClient = fakeRestClient();
+      const handle = fakeHandle();
+      const sessionRuntime = fakeSessionRuntime({ get: vi.fn().mockReturnValue(handle) });
+      const sessionStore = fakeSessionStore({ findByChannelId: vi.fn().mockReturnValue(sessionFixture()) });
+      const socket = fakeSocketClientFactory();
+      const daemon = createDaemon({
+        restClient,
+        stateStore: fakeStateStore(),
+        sessionStore,
+        logger: silentLogger(),
+        operatorEmail: 'jon23d@gmail.com',
+        wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
+        token: 'tok-123',
+        createSocketClient: socket.factory,
+        sessionRuntime,
+      });
+      await daemon.start();
+
+      await socket.firePost(post({ channelId: 'session-chan-1', message: 'do the thing' }));
+
+      expect(handle.sendPrompt).toHaveBeenCalledWith('do the thing');
+      // Not the control-plane command path: no unknown-command / list / help reply.
+      expect(restClient.createPost).not.toHaveBeenCalled();
+    });
+
+    it('does not forward a message from a channel the daemon does not manage (not the DM, not a known session channel)', async () => {
+      const restClient = fakeRestClient();
+      const sessionStore = fakeSessionStore({ findByChannelId: vi.fn().mockReturnValue(undefined) });
+      const socket = fakeSocketClientFactory();
+      const daemon = createDaemon({
+        restClient,
+        stateStore: fakeStateStore(),
+        sessionStore,
+        logger: silentLogger(),
+        operatorEmail: 'jon23d@gmail.com',
+        wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
+        token: 'tok-123',
+        createSocketClient: socket.factory,
+      });
+      await daemon.start();
+
+      await expect(socket.firePost(post({ channelId: 'some-unrelated-channel', message: 'hello' }))).resolves.toBeUndefined();
+
+      expect(restClient.createPost).not.toHaveBeenCalled();
+    });
+
+    it('does not forward the bot\'s own post in a session channel', async () => {
+      const handle = fakeHandle();
+      const sessionRuntime = fakeSessionRuntime({ get: vi.fn().mockReturnValue(handle) });
+      const sessionStore = fakeSessionStore({ findByChannelId: vi.fn().mockReturnValue(sessionFixture()) });
+      const socket = fakeSocketClientFactory();
+      const daemon = createDaemon({
+        restClient: fakeRestClient(),
+        stateStore: fakeStateStore(),
+        sessionStore,
+        logger: silentLogger(),
+        operatorEmail: 'jon23d@gmail.com',
+        wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
+        token: 'tok-123',
+        createSocketClient: socket.factory,
+        sessionRuntime,
+      });
+      await daemon.start();
+
+      await socket.firePost(post({ channelId: 'session-chan-1', userId: 'bot-1', message: 'echo' }));
+
+      expect(handle.sendPrompt).not.toHaveBeenCalled();
+    });
+
+    it('replies with a clear notice instead of forwarding when the session is stopped', async () => {
+      const restClient = fakeRestClient();
+      const handle = fakeHandle();
+      const sessionRuntime = fakeSessionRuntime({ get: vi.fn().mockReturnValue(handle) });
+      const sessionStore = fakeSessionStore({
+        findByChannelId: vi.fn().mockReturnValue(sessionFixture({ status: 'stopped' })),
+      });
+      const socket = fakeSocketClientFactory();
+      const daemon = createDaemon({
+        restClient,
+        stateStore: fakeStateStore(),
+        sessionStore,
+        logger: silentLogger(),
+        operatorEmail: 'jon23d@gmail.com',
+        wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
+        token: 'tok-123',
+        createSocketClient: socket.factory,
+        sessionRuntime,
+      });
+      await daemon.start();
+
+      await socket.firePost(post({ channelId: 'session-chan-1', message: 'still there?' }));
+
+      expect(handle.sendPrompt).not.toHaveBeenCalled();
+      expect(restClient.createPost).toHaveBeenCalledWith('session-chan-1', expect.stringMatching(/stopped/i));
+    });
+
+    it('logs loudly and posts a clear error into the session channel when forwarding fails, without throwing', async () => {
+      const restClient = fakeRestClient();
+      const handle = fakeHandle({ sendPrompt: vi.fn().mockRejectedValue(new Error('opencode unreachable')) });
+      const sessionRuntime = fakeSessionRuntime({ get: vi.fn().mockReturnValue(handle) });
+      const sessionStore = fakeSessionStore({ findByChannelId: vi.fn().mockReturnValue(sessionFixture()) });
+      const logger = silentLogger();
+      const socket = fakeSocketClientFactory();
+      const daemon = createDaemon({
+        restClient,
+        stateStore: fakeStateStore(),
+        sessionStore,
+        logger,
+        operatorEmail: 'jon23d@gmail.com',
+        wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
+        token: 'tok-123',
+        createSocketClient: socket.factory,
+        sessionRuntime,
+      });
+      await daemon.start();
+
+      await expect(socket.firePost(post({ channelId: 'session-chan-1', message: 'hi' }))).resolves.toBeUndefined();
+
+      expect(logger.error).toHaveBeenCalled();
+      expect(restClient.createPost).toHaveBeenCalledWith('session-chan-1', expect.stringContaining('opencode unreachable'));
+    });
   });
 });

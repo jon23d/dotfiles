@@ -1,0 +1,245 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
+import { HttpResponse, http } from 'msw';
+import { setupServer } from 'msw/node';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createOpencodeHarness } from './opencodeHarness.js';
+import type { SpawnedProcessLike } from './opencodeHarness.js';
+import type { Logger } from './logger.js';
+
+const PORT = 47999;
+const BASE_URL = `http://127.0.0.1:${PORT}`;
+
+const server = setupServer();
+
+function silentLogger(): Logger {
+  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+}
+
+/** A minimal fake child process -- mirrors socketClient.test.ts's WebSocketLike fakes: an
+ * EventEmitter standing in for the real node:child_process handle, with test-only helpers
+ * to simulate the events opencodeHarness.ts actually listens for. */
+function fakeChildProcess(): SpawnedProcessLike & { emitExit(code: number | null): void; emitStderr(chunk: string): void } {
+  const emitter = new EventEmitter();
+  const stderrEmitter = new EventEmitter();
+  const proc = {
+    stderr: stderrEmitter,
+    on: (event: 'exit', listener: (code: number | null) => void) => {
+      emitter.on(event, listener);
+      return proc;
+    },
+    kill: vi.fn(),
+    emitExit(code: number | null) {
+      emitter.emit('exit', code);
+    },
+    emitStderr(chunk: string) {
+      stderrEmitter.emit('data', chunk);
+    },
+  };
+  return proc;
+}
+
+function healthyHandler() {
+  return http.get(`${BASE_URL}/global/health`, () => HttpResponse.json({ healthy: true, version: '1.0.0' }));
+}
+
+let dir: string;
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), 'control-plane-daemon-opencode-test-'));
+});
+
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+  server.resetHandlers();
+});
+
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterAll(() => server.close());
+
+describe('createOpencodeHarness', () => {
+  it('rejects with a clear error and never spawns anything when the folder does not exist', async () => {
+    const spawnProcess = vi.fn();
+    const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+
+    await expect(harness.start({ folder: join(dir, 'does-not-exist'), logger: silentLogger() })).rejects.toThrow(
+      /does-not-exist/,
+    );
+    expect(spawnProcess).not.toHaveBeenCalled();
+  });
+
+  it('rejects with a clear error when the folder is a file, not a directory', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    const filePath = join(dir, 'a-file');
+    await writeFile(filePath, 'not a directory', 'utf8');
+    const spawnProcess = vi.fn();
+    const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+
+    await expect(harness.start({ folder: filePath, logger: silentLogger() })).rejects.toThrow(/not a directory/i);
+    expect(spawnProcess).not.toHaveBeenCalled();
+  });
+
+  it('spawns `opencode serve`, waits for it to become healthy, and creates a session scoped to the requested directory', async () => {
+    const child = fakeChildProcess();
+    const spawnProcess = vi.fn().mockReturnValue(child);
+    let createdWithDirectory: string | undefined;
+    server.use(
+      healthyHandler(),
+      http.post(`${BASE_URL}/session`, ({ request }) => {
+        createdWithDirectory = new URL(request.url).searchParams.get('directory') ?? undefined;
+        return HttpResponse.json({ id: 'ses_abc123' });
+      }),
+    );
+    const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+
+    const handle = await harness.start({ folder: dir, logger: silentLogger() });
+
+    expect(handle).toBeDefined();
+    expect(spawnProcess).toHaveBeenCalledWith(
+      'opencode',
+      expect.arrayContaining(['serve', '--port', String(PORT), '--hostname', '127.0.0.1']),
+      expect.objectContaining({}),
+    );
+    expect(createdWithDirectory).toBe(dir);
+  });
+
+  it('reuses the already-running shared server for a second session instead of spawning again', async () => {
+    const child = fakeChildProcess();
+    const spawnProcess = vi.fn().mockReturnValue(child);
+    server.use(
+      healthyHandler(),
+      http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+    );
+    const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+    const dir2 = await mkdtemp(join(tmpdir(), 'control-plane-daemon-opencode-test-2-'));
+
+    await harness.start({ folder: dir, logger: silentLogger() });
+    await harness.start({ folder: dir2, logger: silentLogger() });
+
+    expect(spawnProcess).toHaveBeenCalledTimes(1);
+    await rm(dir2, { recursive: true, force: true });
+  });
+
+  it('sendPrompt posts the message as a text part to prompt_async, scoped to the session\'s directory', async () => {
+    const child = fakeChildProcess();
+    const spawnProcess = vi.fn().mockReturnValue(child);
+    let capturedBody: unknown;
+    let capturedDirectory: string | null = null;
+    server.use(
+      healthyHandler(),
+      http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+      http.post(`${BASE_URL}/session/ses_abc123/prompt_async`, async ({ request }) => {
+        capturedBody = await request.json();
+        capturedDirectory = new URL(request.url).searchParams.get('directory');
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+    const handle = await harness.start({ folder: dir, logger: silentLogger() });
+
+    await handle.sendPrompt('hello there');
+
+    expect(capturedBody).toEqual({ parts: [{ type: 'text', text: 'hello there' }] });
+    expect(capturedDirectory).toBe(dir);
+  });
+
+  it('sendPrompt rejects with a clear error when opencode responds non-2xx', async () => {
+    const child = fakeChildProcess();
+    const spawnProcess = vi.fn().mockReturnValue(child);
+    server.use(
+      healthyHandler(),
+      http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+      http.post(`${BASE_URL}/session/ses_abc123/prompt_async`, () =>
+        HttpResponse.json({ name: 'NotFoundError', data: { message: 'Session not found' } }, { status: 404 }),
+      ),
+    );
+    const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+    const handle = await harness.start({ folder: dir, logger: silentLogger() });
+
+    await expect(handle.sendPrompt('hello')).rejects.toThrow(/404/);
+  });
+
+  it('stop() deletes only this session via the opencode API and never throws even if that fails', async () => {
+    const child = fakeChildProcess();
+    const spawnProcess = vi.fn().mockReturnValue(child);
+    let deletedId: string | undefined;
+    server.use(
+      healthyHandler(),
+      http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+      http.delete(`${BASE_URL}/session/:id`, ({ params }) => {
+        deletedId = params.id as string;
+        return HttpResponse.json(true);
+      }),
+    );
+    const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+    const handle = await harness.start({ folder: dir, logger: silentLogger() });
+
+    expect(() => handle.stop()).not.toThrow();
+    await vi.waitFor(() => expect(deletedId).toBe('ses_abc123'));
+    // The shared server process itself must not be killed by stopping one session -- other
+    // sessions may still be using it.
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it('onExit fires every registered session handle when the shared server process exits', async () => {
+    const child = fakeChildProcess();
+    const spawnProcess = vi.fn().mockReturnValue(child);
+    server.use(
+      healthyHandler(),
+      http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+    );
+    const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+    const handle = await harness.start({ folder: dir, logger: silentLogger() });
+    const onExit = vi.fn();
+    handle.onExit(onExit);
+
+    child.emitExit(1);
+
+    expect(onExit).toHaveBeenCalledWith({ code: 1 });
+  });
+
+  it('onExit invokes the callback immediately if the process already exited before onExit was registered', async () => {
+    const child = fakeChildProcess();
+    const spawnProcess = vi.fn().mockReturnValue(child);
+    server.use(
+      healthyHandler(),
+      http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+    );
+    const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+    const handle = await harness.start({ folder: dir, logger: silentLogger() });
+
+    child.emitExit(0);
+    const onExit = vi.fn();
+    handle.onExit(onExit);
+
+    expect(onExit).toHaveBeenCalledWith({ code: 0 });
+  });
+
+  it('rejects with a clear error, including captured stderr, if the process exits before becoming ready', async () => {
+    const child = fakeChildProcess();
+    const spawnProcess = vi.fn().mockImplementation(() => {
+      // Simulate the child dying almost immediately, before any health check could succeed.
+      queueMicrotask(() => {
+        child.emitStderr('opencode: fatal: address already in use');
+        child.emitExit(1);
+      });
+      return child;
+    });
+    const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT, readyTimeoutMs: 500, readyPollIntervalMs: 10 });
+
+    await expect(harness.start({ folder: dir, logger: silentLogger() })).rejects.toThrow(/address already in use/);
+  });
+
+  it('rejects with a clear timeout error if the server never becomes healthy in time', async () => {
+    const child = fakeChildProcess();
+    const spawnProcess = vi.fn().mockReturnValue(child);
+    // No `/global/health` handler registered -- every poll fails with a network error, and the
+    // fake child process never emits 'exit', so this exercises the timeout path specifically.
+    const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT, readyTimeoutMs: 100, readyPollIntervalMs: 10 });
+
+    await expect(harness.start({ folder: dir, logger: silentLogger() })).rejects.toThrow(/ready|timed out/i);
+    expect(child.kill).toHaveBeenCalled();
+  });
+});

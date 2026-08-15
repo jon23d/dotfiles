@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { commandRegistry } from './commands.js';
 import { decideReply, UNKNOWN_COMMAND_REPLY } from './messageRouter.js';
+import type { RouterDeps } from './messageRouter.js';
+import type { HarnessAdapter, HarnessSessionHandle } from './harness.js';
+import type { Logger } from './logger.js';
+import type { MattermostRestClient, Team } from './mattermostRestClient.js';
+import type { SessionRuntimeRegistry } from './sessionRuntime.js';
 import type { Session, SessionStore } from './sessionStore.js';
 import type { IncomingPost, RoutingContext } from './types.js';
 
@@ -21,35 +26,98 @@ function post(overrides: Partial<IncomingPost> = {}): IncomingPost {
   };
 }
 
-/** No production SessionStore writes anything yet (KAN-5/KAN-6 land later), so
- * most tests here just need an empty one; the `list` tests below inject
- * fixture sessions the same way KAN-3's tests injected a fixture command
- * registry. */
+function silentLogger(): Logger {
+  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+}
+
 function fakeSessionStore(sessions: Session[] = []): SessionStore {
-  return { listSessions: () => sessions };
+  return {
+    listSessions: () => sessions,
+    addSession: vi.fn(),
+    findByChannelId: vi.fn().mockReturnValue(undefined),
+    markStopped: vi.fn(),
+  };
+}
+
+function fakeRestClient(overrides: Partial<MattermostRestClient> = {}): MattermostRestClient {
+  return {
+    getUserIdByEmail: vi.fn().mockResolvedValue('jon-1'),
+    getMyUserId: vi.fn().mockResolvedValue('bot-1'),
+    getOrCreateDirectChannel: vi.fn().mockResolvedValue('dm-1'),
+    createPost: vi.fn().mockResolvedValue(undefined),
+    getPostsSince: vi.fn().mockResolvedValue([]),
+    getMyTeams: vi.fn().mockResolvedValue([{ id: 'team-1', name: 'devops' }] satisfies Team[]),
+    createPrivateChannel: vi.fn().mockResolvedValue('new-channel-id'),
+    addChannelMember: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+function fakeSessionRuntime(overrides: Partial<SessionRuntimeRegistry> = {}): SessionRuntimeRegistry {
+  return {
+    register: vi.fn(),
+    get: vi.fn().mockReturnValue(undefined),
+    remove: vi.fn(),
+    ...overrides,
+  };
+}
+
+function fakeHandle(overrides: Partial<HarnessSessionHandle> = {}): HarnessSessionHandle {
+  return {
+    sendPrompt: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn(),
+    onExit: vi.fn(),
+    ...overrides,
+  };
+}
+
+function fakeOpencodeAdapter(overrides: Partial<HarnessAdapter> = {}): HarnessAdapter {
+  return {
+    name: 'opencode',
+    start: vi.fn().mockResolvedValue(fakeHandle()),
+    ...overrides,
+  };
+}
+
+/** No production SessionStore writes anything by itself here -- most tests
+ * just need an empty one, the same way KAN-3's tests injected a fixture
+ * command registry. `start`-specific deps default to a working happy path
+ * so non-`start` tests never have to think about them. */
+function fakeDeps(overrides: Partial<RouterDeps> = {}): RouterDeps {
+  return {
+    sessionStore: fakeSessionStore(),
+    restClient: fakeRestClient(),
+    sessionRuntime: fakeSessionRuntime(),
+    harnesses: { opencode: fakeOpencodeAdapter() },
+    allocateSessionNumber: vi.fn().mockResolvedValue(4),
+    logger: silentLogger(),
+    hostname: 'devsix',
+    operatorUserId: 'jon-1',
+    ...overrides,
+  };
 }
 
 describe('decideReply', () => {
-  it('replies with the unknown-command message for an unrecognized command', () => {
-    const decision = decideReply(post({ message: 'anything at all' }), context, fakeSessionStore());
+  it('replies with the unknown-command message for an unrecognized command', async () => {
+    const decision = await decideReply(post({ message: 'anything at all' }), context, fakeDeps());
 
     expect(decision).toEqual({ shouldReply: true, replyMessage: UNKNOWN_COMMAND_REPLY });
   });
 
-  it('does not reply to the bot own posts, to avoid a self-reply loop', () => {
-    const decision = decideReply(post({ userId: 'bot-1' }), context, fakeSessionStore());
+  it('does not reply to the bot own posts, to avoid a self-reply loop', async () => {
+    const decision = await decideReply(post({ userId: 'bot-1' }), context, fakeDeps());
 
     expect(decision).toEqual({ shouldReply: false });
   });
 
-  it('does not reply to posts from someone other than the operator', () => {
-    const decision = decideReply(post({ userId: 'someone-else' }), context, fakeSessionStore());
+  it('does not reply to posts from someone other than the operator', async () => {
+    const decision = await decideReply(post({ userId: 'someone-else' }), context, fakeDeps());
 
     expect(decision).toEqual({ shouldReply: false });
   });
 
-  it('does not reply to posts outside the resolved DM channel', () => {
-    const decision = decideReply(post({ channelId: 'some-other-channel' }), context, fakeSessionStore());
+  it('does not reply to posts outside the resolved DM channel', async () => {
+    const decision = await decideReply(post({ channelId: 'some-other-channel' }), context, fakeDeps());
 
     expect(decision).toEqual({ shouldReply: false });
   });
@@ -59,8 +127,8 @@ describe('decideReply', () => {
   });
 
   describe('`help` with no arguments', () => {
-    it('replies with every registered command and its one-line description', () => {
-      const decision = decideReply(post({ message: 'help' }), context, fakeSessionStore());
+    it('replies with every registered command and its one-line description', async () => {
+      const decision = await decideReply(post({ message: 'help' }), context, fakeDeps());
 
       expect(decision.shouldReply).toBe(true);
       for (const command of commandRegistry) {
@@ -68,50 +136,50 @@ describe('decideReply', () => {
       }
     });
 
-    it('is case-insensitive and tolerant of surrounding whitespace', () => {
-      const decision = decideReply(post({ message: '  HELP  ' }), context, fakeSessionStore());
+    it('is case-insensitive and tolerant of surrounding whitespace', async () => {
+      const decision = await decideReply(post({ message: '  HELP  ' }), context, fakeDeps());
 
       expect(decision.replyMessage).toContain('`help`');
     });
   });
 
   describe('`help <command>`', () => {
-    it('replies with that command\'s detailed usage when one is registered', () => {
+    it('replies with that command\'s detailed usage when one is registered', async () => {
       const helpEntry = commandRegistry.find((command) => command.name === 'help');
-      const decision = decideReply(post({ message: 'help help' }), context, fakeSessionStore());
+      const decision = await decideReply(post({ message: 'help help' }), context, fakeDeps());
 
       expect(decision).toEqual({ shouldReply: true, replyMessage: helpEntry?.usage });
     });
 
-    it('is case-insensitive for the target command name', () => {
+    it('is case-insensitive for the target command name', async () => {
       const helpEntry = commandRegistry.find((command) => command.name === 'help');
-      const decision = decideReply(post({ message: 'help HELP' }), context, fakeSessionStore());
+      const decision = await decideReply(post({ message: 'help HELP' }), context, fakeDeps());
 
       expect(decision).toEqual({ shouldReply: true, replyMessage: helpEntry?.usage });
     });
 
-    it('replies with a clear note (never an error) for an unrecognized command name', () => {
-      const decision = decideReply(post({ message: 'help bogus' }), context, fakeSessionStore());
+    it('replies with a clear note (never an error) for an unrecognized command name', async () => {
+      const decision = await decideReply(post({ message: 'help bogus' }), context, fakeDeps());
 
       expect(decision).toEqual({ shouldReply: true, replyMessage: 'No help available for `bogus`.' });
     });
 
-    it('sanitizes backticks in an unrecognized target name so the reply keeps well-formed markdown', () => {
-      const decision = decideReply(post({ message: 'help `x`' }), context, fakeSessionStore());
+    it('sanitizes backticks in an unrecognized target name so the reply keeps well-formed markdown', async () => {
+      const decision = await decideReply(post({ message: 'help `x`' }), context, fakeDeps());
 
       expect(decision).toEqual({ shouldReply: true, replyMessage: 'No help available for `x`.' });
     });
   });
 
   describe('`list`', () => {
-    it('replies with a clear "no sessions" message when the store is empty', () => {
-      const decision = decideReply(post({ message: 'list' }), context, fakeSessionStore([]));
+    it('replies with a clear "no sessions" message when the store is empty', async () => {
+      const decision = await decideReply(post({ message: 'list' }), context, fakeDeps({ sessionStore: fakeSessionStore([]) }));
 
       expect(decision.shouldReply).toBe(true);
       expect(decision.replyMessage).toMatch(/no sessions/i);
     });
 
-    it('reads from the injected session store and lists running sessions above stopped ones', () => {
+    it('reads from the injected session store and lists running sessions above stopped ones', async () => {
       const sessions: Session[] = [
         {
           id: 'sess-stopped',
@@ -130,7 +198,7 @@ describe('decideReply', () => {
           folder: '/home/jon/project-b',
         },
       ];
-      const decision = decideReply(post({ message: 'list' }), context, fakeSessionStore(sessions));
+      const decision = await decideReply(post({ message: 'list' }), context, fakeDeps({ sessionStore: fakeSessionStore(sessions) }));
 
       expect(decision.shouldReply).toBe(true);
       const message = decision.replyMessage ?? '';
@@ -140,11 +208,38 @@ describe('decideReply', () => {
       expect(message.indexOf('#2 : dev-vm')).toBeLessThan(message.indexOf('stopped-session'));
     });
 
-    it('is case-insensitive and tolerant of surrounding whitespace', () => {
-      const decision = decideReply(post({ message: '  LIST  ' }), context, fakeSessionStore([]));
+    it('is case-insensitive and tolerant of surrounding whitespace', async () => {
+      const decision = await decideReply(post({ message: '  LIST  ' }), context, fakeDeps({ sessionStore: fakeSessionStore([]) }));
 
       expect(decision.shouldReply).toBe(true);
       expect(decision.replyMessage).toMatch(/no sessions/i);
+    });
+  });
+
+  describe('`start`', () => {
+    it('dispatches into runStart and returns its reply -- happy path creates a session', async () => {
+      const sessionStore = fakeSessionStore();
+      const deps = fakeDeps({ sessionStore });
+
+      const decision = await decideReply(post({ message: 'start opencode /home/jon/project' }), context, deps);
+
+      expect(decision.shouldReply).toBe(true);
+      expect(decision.replyMessage).toContain('#4 : devsix');
+      expect(sessionStore.addSession).toHaveBeenCalled();
+    });
+
+    it('asks for harness and folder when neither is given', async () => {
+      const decision = await decideReply(post({ message: 'start' }), context, fakeDeps());
+
+      expect(decision.shouldReply).toBe(true);
+      expect(decision.replyMessage).toMatch(/harness/i);
+    });
+
+    it('is case-insensitive on the command name itself', async () => {
+      const decision = await decideReply(post({ message: 'START opencode /home/jon/project' }), context, fakeDeps());
+
+      expect(decision.shouldReply).toBe(true);
+      expect(decision.replyMessage).not.toBe(UNKNOWN_COMMAND_REPLY);
     });
   });
 });

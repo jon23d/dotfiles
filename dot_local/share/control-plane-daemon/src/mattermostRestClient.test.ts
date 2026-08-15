@@ -175,4 +175,80 @@ describe('createMattermostRestClient', () => {
 
     await expect(client().getMyUserId()).rejects.toThrow();
   });
+
+  it('getMyTeams resolves the ids of every team the bot belongs to', async () => {
+    server.use(
+      http.get(`${BASE_URL}/api/v4/users/me/teams`, ({ request }) => {
+        expect(request.headers.get('Authorization')).toBe(`Bearer ${TOKEN}`);
+        return HttpResponse.json([
+          { id: 'team-1', name: 'devops' },
+          { id: 'team-2', name: 'eng' },
+        ]);
+      }),
+    );
+
+    const teams = await client().getMyTeams();
+
+    expect(teams).toEqual([
+      { id: 'team-1', name: 'devops' },
+      { id: 'team-2', name: 'eng' },
+    ]);
+  });
+
+  it('getMyTeams resolves an empty array when the bot belongs to zero teams (the KAN-5 blocker)', async () => {
+    server.use(http.get(`${BASE_URL}/api/v4/users/me/teams`, () => HttpResponse.json([])));
+
+    await expect(client().getMyTeams()).resolves.toEqual([]);
+  });
+
+  it('createPrivateChannel posts team/name/display_name/type=P and returns the new channel id', async () => {
+    server.use(
+      http.post(`${BASE_URL}/api/v4/channels`, async ({ request }) => {
+        const body = await request.json();
+        expect(body).toEqual({
+          team_id: 'team-1',
+          name: 'session-4-devsix',
+          display_name: '#4 : devsix',
+          type: 'P',
+        });
+        return HttpResponse.json({ id: 'new-channel-id' });
+      }),
+    );
+
+    const id = await client().createPrivateChannel('team-1', 'session-4-devsix', '#4 : devsix');
+
+    expect(id).toBe('new-channel-id');
+  });
+
+  it('createPrivateChannel throws a loud error including status and body on failure (e.g. duplicate slug)', async () => {
+    server.use(
+      http.post(`${BASE_URL}/api/v4/channels`, () =>
+        HttpResponse.json({ message: 'A channel with that name already exists' }, { status: 400 }),
+      ),
+    );
+
+    await expect(client().createPrivateChannel('team-1', 'dup', 'dup')).rejects.toThrow(/400/);
+  });
+
+  it('addChannelMember posts the user id to add to the channel', async () => {
+    server.use(
+      http.post(`${BASE_URL}/api/v4/channels/chan-1/members`, async ({ request }) => {
+        const body = await request.json();
+        expect(body).toEqual({ user_id: 'jon-user-id' });
+        return HttpResponse.json({ channel_id: 'chan-1', user_id: 'jon-user-id' });
+      }),
+    );
+
+    await expect(client().addChannelMember('chan-1', 'jon-user-id')).resolves.toBeUndefined();
+  });
+
+  it('addChannelMember throws a loud error on failure', async () => {
+    server.use(
+      http.post(`${BASE_URL}/api/v4/channels/chan-1/members`, () =>
+        HttpResponse.json({ message: 'forbidden' }, { status: 403 }),
+      ),
+    );
+
+    await expect(client().addChannelMember('chan-1', 'jon-user-id')).rejects.toThrow(/403/);
+  });
 });
