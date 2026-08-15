@@ -1,15 +1,5 @@
+import { stripBackticks } from './markdown.js';
 import type { Session } from './sessionStore.js';
-
-/**
- * Strips backticks from a value that's about to be interpolated into a
- * backtick-quoted span of a reply. Without this, an identifier containing
- * its own backtick would produce mismatched/nested backticks that render
- * oddly as Mattermost markdown -- same defensive move helpCommand.ts makes
- * for `help <command>` (KAN-3 review F1).
- */
-function stripBackticks(value: string): string {
-  return value.replace(/`/g, '');
-}
 
 /**
  * Renders the `list` reply: every known session, running ones first (KAN-4
