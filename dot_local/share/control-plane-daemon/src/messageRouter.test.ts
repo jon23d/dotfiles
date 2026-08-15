@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { commandRegistry } from './commands.js';
 import { decideReply, UNKNOWN_COMMAND_REPLY } from './messageRouter.js';
 import type { IncomingPost, RoutingContext } from './types.js';
 
@@ -13,14 +14,14 @@ function post(overrides: Partial<IncomingPost> = {}): IncomingPost {
     id: 'post-1',
     userId: 'jon-1',
     channelId: 'dm-channel-1',
-    message: 'list',
+    message: 'help',
     createAt: 1000,
     ...overrides,
   };
 }
 
 describe('decideReply', () => {
-  it('replies with the unknown-command message for any message from the operator in the DM channel', () => {
+  it('replies with the unknown-command message for an unrecognized command', () => {
     const decision = decideReply(post({ message: 'anything at all' }), context);
 
     expect(decision).toEqual({ shouldReply: true, replyMessage: UNKNOWN_COMMAND_REPLY });
@@ -46,5 +47,44 @@ describe('decideReply', () => {
 
   it('the unknown-command reply points the operator at `help`', () => {
     expect(UNKNOWN_COMMAND_REPLY).toMatch(/help/);
+  });
+
+  describe('`help` with no arguments', () => {
+    it('replies with every registered command and its one-line description', () => {
+      const decision = decideReply(post({ message: 'help' }), context);
+
+      expect(decision.shouldReply).toBe(true);
+      for (const command of commandRegistry) {
+        expect(decision.replyMessage).toContain(`\`${command.name}\` - ${command.summary}`);
+      }
+    });
+
+    it('is case-insensitive and tolerant of surrounding whitespace', () => {
+      const decision = decideReply(post({ message: '  HELP  ' }), context);
+
+      expect(decision.replyMessage).toContain('`help`');
+    });
+  });
+
+  describe('`help <command>`', () => {
+    it('replies with that command\'s detailed usage when one is registered', () => {
+      const helpEntry = commandRegistry.find((command) => command.name === 'help');
+      const decision = decideReply(post({ message: 'help help' }), context);
+
+      expect(decision).toEqual({ shouldReply: true, replyMessage: helpEntry?.usage });
+    });
+
+    it('is case-insensitive for the target command name', () => {
+      const helpEntry = commandRegistry.find((command) => command.name === 'help');
+      const decision = decideReply(post({ message: 'help HELP' }), context);
+
+      expect(decision).toEqual({ shouldReply: true, replyMessage: helpEntry?.usage });
+    });
+
+    it('replies with a clear note (never an error) for an unrecognized command name', () => {
+      const decision = decideReply(post({ message: 'help bogus' }), context);
+
+      expect(decision).toEqual({ shouldReply: true, replyMessage: 'No help available for `bogus`.' });
+    });
   });
 });
