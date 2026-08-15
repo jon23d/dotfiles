@@ -62,6 +62,20 @@ A ticket should be completable within a single sprint. If writing the acceptance
 
 **Implementation detail in disguise** — Acceptance criteria that mention database fields, API endpoints, component names, or architectural choices are implementation specs, not behavioural specs. If a criterion could only be written by someone who has already designed the solution, rewrite it from the user's point of view. The test: could a QA engineer verify this criterion without reading the code? If not, reframe it as observable behaviour.
 
+## Before drafting
+
+Ground the ticket in current behavior, not source code: load `system-knowledge`
+and read the relevant `docs/<domain>.md` file(s) first. Draft the new or
+changed behavior in plain prose before writing acceptance criteria — that
+draft is what the criteria restate as Given/When/Then, not something to
+invent from scratch.
+
+## Posting
+
+Once drafted, use `project-management` for where the ticket lands and how
+it's assigned/refined. If working interactively with the user, present the
+draft and get confirmation before posting.
+
 ## Example
 
 ---

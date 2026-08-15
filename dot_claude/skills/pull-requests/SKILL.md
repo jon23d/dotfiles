@@ -170,7 +170,7 @@ Always use this template. Fill every section — do not leave sections empty or 
 
 ## Quality gate verdicts
 
-<!-- @reviewer verdict. @qa verdict if run. -->
+<!-- Final code-review findings summary (critical/major/minor counts). Note whether qa-verification checks were included. -->
 
 ## Errors and complications
 
