@@ -26,14 +26,6 @@ add_server gitea-mcp '{
   "args": ["-t", "stdio", "-H", "${GITEA_URL}", "-T", "${GITEA_MCP_TOKEN}"]
 }'
 
-add_server outline '{
-  "type": "http",
-  "url": "https://wiki.jon23d.cc/mcp",
-  "headers": {
-    "Authorization": "Bearer ${OUTLINE_API_KEY}"
-  }
-}'
-
 add_server basic-memory '{
   "type": "http",
   "url": "https://memory.jon23d.cc/mcp"
