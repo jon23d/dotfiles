@@ -37,10 +37,7 @@
     "mcp-atlassian": {
       "enabled": true,
       "type": "local",
-      // atlassian-python-api pinned below 4: 4.x restructured the Confluence
-      // client (Cloud object loses get_page_by_id/cql/get_all_pages_from_space_raw),
-      // which breaks every Confluence tool while Jira keeps working.
-      "command": ["uvx", "--with", "atlassian-python-api<4", "mcp-atlassian"],
+      "command": ["uvx", "mcp-atlassian"],
       "environment": {
         "JIRA_URL": "{env:JIRA_URL}",
         "JIRA_USERNAME": "{env:JIRA_USERNAME}",
