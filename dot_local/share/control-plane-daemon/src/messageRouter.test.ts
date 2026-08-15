@@ -86,5 +86,11 @@ describe('decideReply', () => {
 
       expect(decision).toEqual({ shouldReply: true, replyMessage: 'No help available for `bogus`.' });
     });
+
+    it('sanitizes backticks in an unrecognized target name so the reply keeps well-formed markdown', () => {
+      const decision = decideReply(post({ message: 'help `x`' }), context);
+
+      expect(decision).toEqual({ shouldReply: true, replyMessage: 'No help available for `x`.' });
+    });
   });
 });

@@ -34,4 +34,16 @@ describe('renderCommandDetail', () => {
   it('returns a clear note (never an error) for a name not in the registry at all', () => {
     expect(renderCommandDetail(commands, 'bogus')).toBe('No help available for `bogus`.');
   });
+
+  it('strips backticks from an unrecognized command name so it cannot break the reply\'s markdown span', () => {
+    expect(renderCommandDetail(commands, 'a`b`c')).toBe('No help available for `abc`.');
+  });
+
+  it('strips backticks from the command name in the "no detailed help yet" reply too', () => {
+    const commandsWithBacktickInName: CommandDefinition[] = [
+      { name: 'li`st', summary: 'Defensive case: a registry name that itself contains a backtick.' },
+    ];
+
+    expect(renderCommandDetail(commandsWithBacktickInName, 'li`st')).toBe('No detailed help available yet for `list`.');
+  });
 });
