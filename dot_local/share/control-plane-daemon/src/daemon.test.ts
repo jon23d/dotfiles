@@ -143,16 +143,30 @@ describe('createDaemon', () => {
     expect(restClient.createPost).not.toHaveBeenCalled();
   });
 
-  it('on socket open, catches up on posts since the last watermark (inclusive) and replies to each in order, deduping the already-processed post by id', async () => {
+  it('on socket open, catches up across a same-millisecond sibling of the watermark that a real Mattermost server would drop under an exclusive `since` boundary, deduping only the exact already-processed post by id', async () => {
+    // Mattermost's real `since` filter is `WHERE UpdateAt > ?` -- strictly
+    // exclusive of the boundary millisecond (KAN-2 review F2b). This mock
+    // reproduces that by filtering on the `since` value it's actually
+    // called with, unlike a naive mock that unconditionally returns every
+    // post regardless of `since`. That means this test only passes if
+    // daemon.ts queries with `since = lastSeen.ms - 1`; the old buggy
+    // `since = lastSeen.ms` would cause the server-side filter here to drop
+    // both same-ms posts (including the never-processed sibling) before
+    // daemon.ts's own dedupe-by-id logic ever sees them.
+    const allPosts = [
+      post({ id: 'p0', createAt: 5000, message: 'already processed' }),
+      // Same millisecond as the watermark, but a distinct post that was
+      // never processed -- e.g. it arrived while the daemon was
+      // disconnected, in the same millisecond as the last post handled
+      // before disconnect. This is the exact scenario KAN-2 review F2/F2b
+      // is about.
+      post({ id: 'p0b', createAt: 5000, message: 'same-ms sibling, never processed' }),
+      post({ id: 'p1', createAt: 5001, message: 'first' }),
+    ];
     const restClient = fakeRestClient({
-      getPostsSince: vi.fn().mockResolvedValue([
-        // same-millisecond as the persisted watermark -- this is the post
-        // that was already processed and must be deduped by id, not skipped
-        // (or kept) based on timestamp alone (KAN-2 review F2).
-        post({ id: 'p0', createAt: 5000, message: 'already processed' }),
-        post({ id: 'p1', createAt: 5001, message: 'first' }),
-        post({ id: 'p2', createAt: 5002, message: 'second' }),
-      ]),
+      getPostsSince: vi.fn((_channelId: string, since: number) =>
+        Promise.resolve(allPosts.filter((p) => p.createAt > since)),
+      ),
     });
     const stateStore = fakeStateStore({ readLastSeen: vi.fn().mockResolvedValue({ ms: 5000, id: 'p0' }) });
     const socket = fakeSocketClientFactory();
@@ -169,10 +183,15 @@ describe('createDaemon', () => {
 
     await socket.fireOpen();
 
-    expect(restClient.getPostsSince).toHaveBeenCalledWith('dm-1', 5000);
+    expect(restClient.getPostsSince).toHaveBeenCalledWith('dm-1', 4999);
     expect(restClient.createPost).toHaveBeenCalledTimes(2);
-    expect(restClient.createPost).not.toHaveBeenCalledWith('dm-1', expect.stringContaining('already processed'));
-    expect(stateStore.writeLastSeen).toHaveBeenLastCalledWith(5002, 'p2');
+    // p0 (id match) must never be re-processed...
+    expect(stateStore.writeLastSeen).not.toHaveBeenCalledWith(5000, 'p0');
+    // ...but p0b, its same-millisecond sibling, must be -- this is exactly
+    // the post the old exclusive-`ms` boundary silently dropped.
+    expect(stateStore.writeLastSeen).toHaveBeenCalledWith(5000, 'p0b');
+    expect(stateStore.writeLastSeen).toHaveBeenCalledWith(5001, 'p1');
+    expect(stateStore.writeLastSeen).toHaveBeenLastCalledWith(5001, 'p1');
   });
 
   it('falls back to the exclusive ms+1 boundary when the persisted watermark predates id tracking (legacy state file)', async () => {

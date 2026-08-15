@@ -91,12 +91,18 @@ export function createDaemon(config: DaemonConfig): Daemon {
         return;
       }
       // Same-millisecond posts can share createAt, so a boundary based on
-      // time alone can silently skip one of them (KAN-2 review F2). When we
-      // know the last-processed post's id, fetch inclusively and dedupe by
-      // id, which is exact. Older state files that predate id tracking
-      // don't have an id to dedupe against, so they fall back to the
+      // time alone can silently skip one of them (KAN-2 review F2). Mattermost's
+      // `since` filter is a strict server-side exclusive boundary
+      // (`WHERE UpdateAt > ?`), not inclusive of the exact millisecond (KAN-2
+      // review F2b) -- so querying with `since = lastSeen.ms` never returns a
+      // sibling post that shares lastSeen's exact millisecond; the server
+      // drops it before it ever reaches our dedupe-by-id filter below. To
+      // actually get that sibling back from the server, we query one
+      // millisecond *below* the watermark and then dedupe client-side by id
+      // (not by timestamp), which is exact. Older state files that predate id
+      // tracking don't have an id to dedupe against, so they fall back to the
       // original exclusive `ms + 1` boundary for this one catch-up.
-      const sinceMs = lastSeen.id === null ? lastSeen.ms + 1 : lastSeen.ms;
+      const sinceMs = lastSeen.id === null ? lastSeen.ms + 1 : lastSeen.ms - 1;
       const fetched = await restClient.getPostsSince(context.dmChannelId, sinceMs);
       const missed = lastSeen.id === null ? fetched : fetched.filter((p) => p.id !== lastSeen.id);
       logger.info('catch-up fetched missed posts', { count: missed.length });
