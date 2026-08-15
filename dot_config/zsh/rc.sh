@@ -11,6 +11,13 @@ setopt HIST_IGNORE_SPACE
 [ -f "$HOME/.config/secrets.env" ] && source "$HOME/.config/secrets.env"
 [ -f "$HOME/.config/configs.env" ] && source "$HOME/.config/configs.env"
 
+# Mattermost bot identity is one account per host (see gitops:
+# platform/mattermost) -- secrets.env holds MATTERMOST_TOKEN_<HOSTNAME> per
+# bot; resolve this shell's own host to the right one so every harness
+# (Claude Code, opencode, ...) can just reference the generic
+# MATTERMOST_MCP_TOKEN without knowing which host it's on.
+export MATTERMOST_MCP_TOKEN="$(eval echo \$MATTERMOST_TOKEN_$(hostname | tr '[:lower:]-' '[:upper:]_'))"
+
 for _p in \
     /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
     /usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
