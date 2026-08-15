@@ -37,7 +37,7 @@
     "mcp-atlassian": {
       "enabled": true,
       "type": "local",
-      "command": ["uvx", "mcp-atlassian"],
+      "command": ["uvx", "--with", "atlassian-python-api<5.0.0", "mcp-atlassian"],
       "environment": {
         "JIRA_URL": "{env:JIRA_URL}",
         "JIRA_USERNAME": "{env:JIRA_USERNAME}",

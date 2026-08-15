@@ -47,10 +47,13 @@ add_server context7 '{
   }
 }'
 
+# mcp-atlassian>=0.23.0 pins atlassian-python-api>=4.0.0 with no upper bound,
+# so uvx resolves the 5.x rewrite, which removed methods (e.g. get_page_by_id)
+# that mcp-atlassian's code still calls. Pin below 5.0 until upstream catches up.
 add_server mcp-atlassian '{
   "type": "stdio",
   "command": "uvx",
-  "args": ["mcp-atlassian"],
+  "args": ["--with", "atlassian-python-api<5.0.0", "mcp-atlassian"],
   "env": {
     "JIRA_URL": "${JIRA_URL}",
     "JIRA_USERNAME": "${JIRA_USERNAME}",
