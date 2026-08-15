@@ -21,6 +21,9 @@ not report them.
 Report what a gate cannot detect: correctness under untested conditions, drift
 from the plan, violated constraints, defects invisible to a passing suite.
 
+Interacting with running backends or frontends. Do not use Playwright or other
+E2E-type tools.
+
 ## Severity
 
 **`critical`** — merging causes harm. Data loss or corruption. Security or
