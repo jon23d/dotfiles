@@ -3,12 +3,30 @@ import { createLogger } from './logger.js';
 import type { Logger } from './logger.js';
 import type { IncomingPost } from './types.js';
 
+export interface Team {
+  id: string;
+  name: string;
+}
+
 export interface MattermostRestClient {
   getUserIdByEmail(email: string): Promise<string>;
   getMyUserId(): Promise<string>;
   getOrCreateDirectChannel(userIdA: string, userIdB: string): Promise<string>;
   createPost(channelId: string, message: string): Promise<void>;
   getPostsSince(channelId: string, sinceMs: number): Promise<IncomingPost[]>;
+  /** Every team the bot belongs to. Empty when the bot hasn't been added to
+   * any team yet -- the known KAN-5 blocker that prevents channel creation. */
+  getMyTeams(): Promise<Team[]>;
+  /** Creates a private ('P') channel in `teamId` -- Mattermost allows only
+   * one DM per user pair, so a session's dedicated chat must be a private
+   * channel the bot creates and adds the operator to, not a second DM (see
+   * KAN-5 Jira comment). Returns the new channel's id. */
+  createPrivateChannel(teamId: string, name: string, displayName: string): Promise<string>;
+  addChannelMember(channelId: string, userId: string): Promise<void>;
+  /** Archives (soft-deletes) a channel -- used to clean up a session channel
+   * that was created but couldn't be fully set up (e.g. the operator
+   * couldn't be added to it), so it doesn't leak as an invisible orphan. */
+  archiveChannel(channelId: string): Promise<void>;
 }
 
 export interface MattermostRestClientConfig {
@@ -27,6 +45,8 @@ const SINCE_PAGE_CAP = 1000;
 
 const userSchema = z.object({ id: z.string().min(1) });
 const channelSchema = z.object({ id: z.string().min(1) });
+const teamSchema = z.object({ id: z.string().min(1), name: z.string().min(1) });
+const teamsSchema = z.array(teamSchema);
 const postSchema = z.object({
   id: z.string().min(1),
   user_id: z.string().min(1),
@@ -130,6 +150,29 @@ export function createMattermostRestClient(config: MattermostRestClientConfig): 
       }
 
       return all.sort((a, b) => a.createAt - b.createAt);
+    },
+
+    async getMyTeams() {
+      const data = await request('GET', '/api/v4/users/me/teams');
+      return teamsSchema.parse(data);
+    },
+
+    async createPrivateChannel(teamId, name, displayName) {
+      const data = await request('POST', '/api/v4/channels', {
+        team_id: teamId,
+        name,
+        display_name: displayName,
+        type: 'P',
+      });
+      return channelSchema.parse(data).id;
+    },
+
+    async addChannelMember(channelId, userId) {
+      await request('POST', `/api/v4/channels/${encodeURIComponent(channelId)}/members`, { user_id: userId });
+    },
+
+    async archiveChannel(channelId) {
+      await request('DELETE', `/api/v4/channels/${encodeURIComponent(channelId)}`);
     },
   };
 }

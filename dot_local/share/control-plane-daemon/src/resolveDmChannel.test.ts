@@ -9,6 +9,10 @@ function fakeClient(overrides: Partial<MattermostRestClient> = {}): MattermostRe
     getOrCreateDirectChannel: vi.fn().mockResolvedValue('dm-channel-id'),
     createPost: vi.fn().mockResolvedValue(undefined),
     getPostsSince: vi.fn().mockResolvedValue([]),
+    getMyTeams: vi.fn().mockResolvedValue([]),
+    createPrivateChannel: vi.fn().mockResolvedValue('new-channel-id'),
+    addChannelMember: vi.fn().mockResolvedValue(undefined),
+    archiveChannel: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }

@@ -6,6 +6,7 @@ const envSchema = z.object({
   MATTERMOST_URL: z.string().url().default('https://mattermost.jon23d.cc'),
   OPERATOR_EMAIL: z.string().email().default('jon23d@gmail.com'),
   STATE_FILE_PATH: z.string().min(1).optional(),
+  SESSION_NUMBER_FILE_PATH: z.string().min(1).optional(),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 

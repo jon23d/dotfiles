@@ -1,8 +1,15 @@
+import { hostname as osHostname } from 'node:os';
+import { createHarnessRegistry } from './harnessRegistry.js';
 import { decideReply } from './messageRouter.js';
 import { resolveRoutingContext } from './resolveDmChannel.js';
+import { createSessionRuntimeRegistry } from './sessionRuntime.js';
 import { createMattermostSocketClient } from './socketClient.js';
+import type { HarnessAdapter } from './harness.js';
+import type { KnownHarnessName } from './harnessRegistry.js';
 import type { Logger } from './logger.js';
 import type { MattermostRestClient } from './mattermostRestClient.js';
+import type { RouterDeps } from './messageRouter.js';
+import type { SessionRuntimeRegistry } from './sessionRuntime.js';
 import type { SessionStore } from './sessionStore.js';
 import type { MattermostSocketClient, MattermostSocketClientConfig } from './socketClient.js';
 import type { StateStore } from './stateStore.js';
@@ -22,6 +29,19 @@ export interface DaemonConfig {
   wsUrl: string;
   token: string;
   createSocketClient?: (config: MattermostSocketClientConfig) => MattermostSocketClient;
+  /** Live handle registry for forwarding session-channel messages (KAN-5 AC3). Defaults to a fresh in-memory registry. */
+  sessionRuntime?: SessionRuntimeRegistry;
+  /** Harness dispatch table for `start` (KAN-5). Defaults to the real registry (opencode only -- see harnessRegistry.ts). */
+  harnesses?: Partial<Record<KnownHarnessName, HarnessAdapter>>;
+  /** Allocates and persists the next `start` session number. Defaults to an in-memory (non-persisted) counter -- index.ts wires the real file-backed one (sessionNumberStore.ts). */
+  allocateSessionNumber?: () => Promise<number>;
+  /** The VM's hostname, used in `start`'s `#<n> : <hostName>` identifier. Defaults to `os.hostname()`. */
+  hostname?: string;
+}
+
+function defaultAllocateSessionNumber(): () => Promise<number> {
+  let next = 1;
+  return () => Promise.resolve(next++);
 }
 
 /**
@@ -43,14 +63,19 @@ export function createDaemon(config: DaemonConfig): Daemon {
     wsUrl,
     token,
     createSocketClient = createMattermostSocketClient,
+    sessionRuntime = createSessionRuntimeRegistry(),
+    harnesses = createHarnessRegistry(),
+    allocateSessionNumber = defaultAllocateSessionNumber(),
+    hostname = osHostname(),
   } = config;
 
   let context: RoutingContext | undefined;
+  let routerDeps: RouterDeps | undefined;
   let socketClient: MattermostSocketClient | undefined;
 
   async function replyIfWarranted(post: IncomingPost): Promise<void> {
-    if (!context) return; // should be unreachable once start() has resolved
-    const decision = decideReply(post, context, sessionStore);
+    if (!context || !routerDeps) return; // should be unreachable once start() has resolved
+    const decision = await decideReply(post, context, routerDeps);
     if (!decision.shouldReply || decision.replyMessage === undefined) return;
 
     try {
@@ -73,14 +98,79 @@ export function createDaemon(config: DaemonConfig): Daemon {
     }
   }
 
+  /**
+   * KAN-5 AC3: a message posted in a session's dedicated channel must reach
+   * that session specifically, not the control plane or another session.
+   * Deliberately silent on success (no chat reply posted here) -- relaying
+   * the harness's own output back into Mattermost is a distinct, larger
+   * feature this ticket's ACs don't require; only failure paths post back,
+   * per the epic's "never fail silently" principle.
+   */
+  async function forwardToSessionIfApplicable(post: IncomingPost): Promise<void> {
+    if (!context) return;
+    const session = sessionStore.findByChannelId(post.channelId);
+    if (!session) return; // not a channel this daemon manages -- nothing to do
+    if (post.userId === context.botUserId) return; // never react to our own posts
+    if (post.userId !== context.operatorUserId) return; // only the operator's messages are forwarded
+
+    if (session.status !== 'running') {
+      await restClient
+        .createPost(post.channelId, `Session \`${session.identifier}\` is stopped and can't receive messages.`)
+        .catch((err: unknown) => {
+          logger.error('failed to post stopped-session notice', { err, channelId: post.channelId });
+        });
+      return;
+    }
+
+    const handle = sessionRuntime.get(post.channelId);
+    if (!handle) {
+      logger.error('session marked running but has no live runtime handle to forward to', {
+        sessionId: session.id,
+        channelId: post.channelId,
+      });
+      await restClient
+        .createPost(
+          post.channelId,
+          `Internal error: \`${session.identifier}\` has no live process to receive your message.`,
+        )
+        .catch((err: unknown) => {
+          logger.error('failed to post internal-error notice', { err, channelId: post.channelId });
+        });
+      return;
+    }
+
+    try {
+      await handle.sendPrompt(post.message);
+      logger.info('forwarded message to session', { sessionId: session.id, channelId: post.channelId, postId: post.id });
+    } catch (err) {
+      logger.error('failed to forward message to session', {
+        err,
+        sessionId: session.id,
+        channelId: post.channelId,
+        postId: post.id,
+      });
+      const errMessage = err instanceof Error ? err.message : String(err);
+      await restClient
+        .createPost(post.channelId, `Failed to deliver your message to \`${session.identifier}\`: ${errMessage}`)
+        .catch((postErr: unknown) => {
+          logger.error('failed to post forwarding-failure notice', { err: postErr, channelId: post.channelId });
+        });
+    }
+  }
+
   async function handlePost(post: IncomingPost): Promise<void> {
     try {
-      await replyIfWarranted(post);
+      if (!context) return; // should be unreachable once start() has resolved
+      if (post.channelId === context.dmChannelId) {
+        await replyIfWarranted(post);
+        return;
+      }
+      await forwardToSessionIfApplicable(post);
     } catch (err) {
-      // Belt-and-braces: replyIfWarranted already catches its own I/O, but
-      // nothing here may ever throw back into the socket client's fire-and
-      // forget call site, or Node reports an unhandled rejection and moves
-      // on without anyone noticing.
+      // Belt-and-braces: both branches above already catch their own I/O,
+      // but nothing here may ever throw back into the socket client's
+      // fire-and-forget call site, or Node reports an unhandled rejection
+      // and moves on without anyone noticing.
       logger.error('unexpected error handling incoming post', { err, postId: post.id });
     }
   }
@@ -121,6 +211,16 @@ export function createDaemon(config: DaemonConfig): Daemon {
     async start() {
       context = await resolveRoutingContext(restClient, operatorEmail);
       logger.info('resolved routing context', { ...context });
+      routerDeps = {
+        restClient,
+        sessionStore,
+        sessionRuntime,
+        harnesses,
+        allocateSessionNumber,
+        logger,
+        hostname,
+        operatorUserId: context.operatorUserId,
+      };
 
       socketClient = createSocketClient({
         wsUrl,

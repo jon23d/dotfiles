@@ -1,9 +1,12 @@
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { createDaemon } from './daemon.js';
 import { loadEnv } from './env.js';
+import { createHarnessRegistry } from './harnessRegistry.js';
 import { createLogger } from './logger.js';
 import { createMattermostRestClient } from './mattermostRestClient.js';
+import { createFileSessionNumberStore } from './sessionNumberStore.js';
+import { createSessionRuntimeRegistry } from './sessionRuntime.js';
 import { createInMemorySessionStore } from './sessionStore.js';
 import { createFileStateStore } from './stateStore.js';
 
@@ -20,6 +23,15 @@ function defaultStateFilePath(): string {
   return join(homedir(), '.local', 'state', 'control-plane-daemon', 'state.json');
 }
 
+// Same directory/naming convention as the watermark state file (KAN-2) --
+// see sessionNumberStore.ts for why this one specifically must be
+// file-persisted (unlike SessionStore itself, which is intentionally
+// in-memory-only): reusing a session number after a restart would collide
+// two different sessions under the same `#<n> : <hostName>` identifier.
+function defaultSessionNumberFilePath(): string {
+  return join(homedir(), '.local', 'state', 'control-plane-daemon', 'session-number.json');
+}
+
 async function main(): Promise<void> {
   const env = loadEnv();
   const stateFilePath = env.STATE_FILE_PATH ?? defaultStateFilePath();
@@ -32,10 +44,11 @@ async function main(): Promise<void> {
 
   const restClient = createMattermostRestClient({ baseUrl: env.MATTERMOST_URL, token: env.MATTERMOST_MCP_TOKEN });
   const stateStore = createFileStateStore(stateFilePath);
-  // In-memory only -- nothing populates this yet (KAN-5/KAN-6 land the
-  // commands that create/end real sessions), so `list` sees an empty store
-  // on every daemon start until those ship. See sessionStore.ts.
+  // In-memory only by design -- see sessionStore.ts for why a daemon
+  // restart doesn't try to reconcile real process state. `start` (KAN-5)
+  // populates it now; a restart just starts from empty again.
   const sessionStore = createInMemorySessionStore();
+  const sessionNumberStore = createFileSessionNumberStore(env.SESSION_NUMBER_FILE_PATH ?? defaultSessionNumberFilePath());
 
   const daemon = createDaemon({
     restClient,
@@ -45,6 +58,10 @@ async function main(): Promise<void> {
     operatorEmail: env.OPERATOR_EMAIL,
     wsUrl: wsUrlFor(env.MATTERMOST_URL),
     token: env.MATTERMOST_MCP_TOKEN,
+    sessionRuntime: createSessionRuntimeRegistry(),
+    harnesses: createHarnessRegistry(),
+    allocateSessionNumber: () => sessionNumberStore.nextSessionNumber(),
+    hostname: hostname(),
   });
 
   const shutdown = (signal: string): void => {
