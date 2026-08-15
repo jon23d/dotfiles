@@ -1,3 +1,7 @@
 .cache
 
 .claude
+
+node_modules/
+
+.agent/

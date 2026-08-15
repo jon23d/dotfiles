@@ -1,0 +1,16 @@
+jira:
+  project_key: KAN
+  statuses:
+    todo: "To Do"
+    in_progress: "In Progress"
+    in_review: "In Review"
+    done: "Done"
+  # No "Agent VM" custom field exists on this project (checked via MCP field
+  # search + issue field introspection on 2026-08-15 -- two such fields exist
+  # but are scoped to other projects' numeric IDs, not KAN's). Skip that step
+  # of the board workflow here rather than guessing a field key.
+epic_link_mode: parent   # team-managed project; child issues use the plain
+                          # "parent" field (additional_fields: {"parent": "KAN-1"}),
+                          # not a separate Epic Link custom field.
+confluence:
+  space_key: Fritzed      # note: mixed-case key, not all-caps like SFFRN/ABC

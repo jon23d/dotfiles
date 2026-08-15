@@ -1,0 +1,23 @@
+[Unit]
+Description=Mattermost control-plane daemon (KAN-2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/control-plane-daemon
+ExecStart=%h/.local/share/control-plane-daemon/node_modules/.bin/tsx %h/.local/share/control-plane-daemon/src/index.ts
+# The whole point of KAN-2: a crash must never mean silence. Restart=always
+# plus journald logging means both "it crashed" and "why" are always visible
+# (`systemctl --user status control-plane-daemon` /
+# `journalctl --user -u control-plane-daemon`), and systemd's own default
+# start-limit throttling turns a persistent crash-loop into a visible
+# "failed" unit state instead of a silent, endless restart spin.
+Restart=always
+RestartSec=5
+EnvironmentFile=-%h/.config/control-plane-daemon/env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

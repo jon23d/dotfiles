@@ -1,0 +1,92 @@
+#!/bin/bash
+set -e
+
+# Install and (re)start the KAN-2 Mattermost control-plane daemon as a
+# systemd --user service. Linux-only -- the daemon connects to Mattermost
+# from a dev VM; on macOS this is a deliberate no-op (dotfiles are also
+# applied there).
+#
+# chezmoi re-runs this whole script whenever ITS OWN rendered content
+# changes, which is why every file that affects what actually runs is
+# hashed below via `include | sha256sum`: a change to any of them (source,
+# package.json, or the systemd unit) changes this comment block, which is
+# what makes chezmoi re-run the install + `systemctl restart` at the bottom.
+# Forgetting to list a file here means editing it would silently NOT
+# redeploy -- exactly the kind of quiet failure KAN-2 exists to avoid.
+#
+#   service:  {{ include "dot_config/systemd/user/control-plane-daemon.service" | sha256sum }}
+#   package:  {{ include "dot_local/share/control-plane-daemon/package.json" | sha256sum }}
+#   lockfile: {{ include "dot_local/share/control-plane-daemon/package-lock.json" | sha256sum }}
+#   daemon:   {{ include "dot_local/share/control-plane-daemon/src/daemon.ts" | sha256sum }}
+#   env:      {{ include "dot_local/share/control-plane-daemon/src/env.ts" | sha256sum }}
+#   index:    {{ include "dot_local/share/control-plane-daemon/src/index.ts" | sha256sum }}
+#   logger:   {{ include "dot_local/share/control-plane-daemon/src/logger.ts" | sha256sum }}
+#   rest:     {{ include "dot_local/share/control-plane-daemon/src/mattermostRestClient.ts" | sha256sum }}
+#   router:   {{ include "dot_local/share/control-plane-daemon/src/messageRouter.ts" | sha256sum }}
+#   backoff:  {{ include "dot_local/share/control-plane-daemon/src/reconnectBackoff.ts" | sha256sum }}
+#   resolve:  {{ include "dot_local/share/control-plane-daemon/src/resolveDmChannel.ts" | sha256sum }}
+#   socket:   {{ include "dot_local/share/control-plane-daemon/src/socketClient.ts" | sha256sum }}
+#   state:    {{ include "dot_local/share/control-plane-daemon/src/stateStore.ts" | sha256sum }}
+#   types:    {{ include "dot_local/share/control-plane-daemon/src/types.ts" | sha256sum }}
+
+[ "$(uname)" = "Linux" ] || exit 0
+command -v systemctl >/dev/null 2>&1 || exit 0
+
+daemon_dir="$HOME/.local/share/control-plane-daemon"
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "install-control-plane-daemon: no node on PATH, skipping install."
+  echo "install-control-plane-daemon: install Node (>=22) and re-run 'chezmoi apply'."
+  exit 0
+fi
+
+echo "install-control-plane-daemon: installing dependencies in $daemon_dir"
+(cd "$daemon_dir" && npm install --omit=dev --no-audit --no-fund)
+
+# --- resolve this host's bot token into a systemd EnvironmentFile ---------
+# systemd --user services don't source zsh, so MATTERMOST_MCP_TOKEN's
+# per-host resolution (see dot_config/zsh/rc.sh) has to be redone here from
+# the same source of truth: secrets.env's MATTERMOST_TOKEN_<HOSTNAME>.
+env_dir="$HOME/.config/control-plane-daemon"
+env_file="$env_dir/env"
+secrets_file="$HOME/.config/secrets.env"
+
+if [ -f "$secrets_file" ]; then
+  host_var="MATTERMOST_TOKEN_$(hostname | tr '[:lower:]-' '[:upper:]_')"
+  # shellcheck disable=SC1090
+  token="$(. "$secrets_file" && eval echo "\$$host_var")"
+  if [ -n "$token" ]; then
+    umask 077
+    mkdir -p "$env_dir"
+    printf 'MATTERMOST_MCP_TOKEN=%s\n' "$token" > "$env_file"
+    chmod 600 "$env_file"
+    echo "install-control-plane-daemon: wrote $env_file from $host_var"
+  else
+    echo "install-control-plane-daemon: $host_var not found in $secrets_file"
+    echo "install-control-plane-daemon: the daemon will fail loudly at startup until this is fixed."
+  fi
+else
+  echo "install-control-plane-daemon: $secrets_file not found (yet) -- skipping token setup."
+  echo "install-control-plane-daemon: re-run 'chezmoi apply' once secrets.env exists."
+fi
+
+# --- enable + (re)start the service ----------------------------------------
+systemctl --user daemon-reload
+systemctl --user enable control-plane-daemon.service
+# `restart`, not `start`+skip-if-running: this script only re-runs when the
+# daemon's own code/unit changed, so an already-running instance must pick
+# up the new code, not keep running the old one.
+systemctl --user restart control-plane-daemon.service
+
+# Keep the daemon running across logout on headless VMs. Best-effort: if
+# there's no passwordless sudo, the service still runs fine during any
+# active login session -- only always-on-after-logout needs linger.
+if [ "$(loginctl show-user "$USER" --property=Linger --value 2>/dev/null)" != "yes" ]; then
+  if sudo -n true 2>/dev/null; then
+    sudo loginctl enable-linger "$USER"
+  else
+    echo "install-control-plane-daemon: no passwordless sudo; skipping 'loginctl enable-linger'."
+    echo "install-control-plane-daemon: without linger, the daemon stops when your last session logs out."
+    echo "install-control-plane-daemon: run 'sudo loginctl enable-linger $USER' manually to fix this."
+  fi
+fi
