@@ -24,8 +24,8 @@ function fakeRestClient(overrides: Partial<MattermostRestClient> = {}): Mattermo
 
 function fakeStateStore(overrides: Partial<StateStore> = {}): StateStore {
   return {
-    readLastSeenMs: vi.fn().mockResolvedValue(null),
-    writeLastSeenMs: vi.fn().mockResolvedValue(undefined),
+    readLastSeen: vi.fn().mockResolvedValue(null),
+    writeLastSeen: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -95,10 +95,33 @@ describe('createDaemon', () => {
     });
     await daemon.start();
 
-    await socket.firePost(post({ createAt: 5000 }));
+    await socket.firePost(post({ id: 'p1', createAt: 5000 }));
 
     expect(restClient.createPost).toHaveBeenCalledWith('dm-1', UNKNOWN_COMMAND_REPLY);
-    expect(stateStore.writeLastSeenMs).toHaveBeenCalledWith(5000);
+    expect(stateStore.writeLastSeen).toHaveBeenCalledWith(5000, 'p1');
+  });
+
+  it('logs an info line with the post id and channel id after a reply is successfully posted', async () => {
+    const restClient = fakeRestClient();
+    const logger = silentLogger();
+    const socket = fakeSocketClientFactory();
+    const daemon = createDaemon({
+      restClient,
+      stateStore: fakeStateStore(),
+      logger,
+      operatorEmail: 'jon23d@gmail.com',
+      wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
+      token: 'tok-123',
+      createSocketClient: socket.factory,
+    });
+    await daemon.start();
+
+    await socket.firePost(post({ id: 'p1' }));
+
+    expect(logger.info).toHaveBeenCalledWith(
+      'posted reply to Mattermost',
+      expect.objectContaining({ postId: 'p1', channelId: 'dm-1' }),
+    );
   });
 
   it('does not reply to the bot own post', async () => {
@@ -120,14 +143,43 @@ describe('createDaemon', () => {
     expect(restClient.createPost).not.toHaveBeenCalled();
   });
 
-  it('on socket open, catches up on posts since the last watermark and replies to each in order', async () => {
+  it('on socket open, catches up on posts since the last watermark (inclusive) and replies to each in order, deduping the already-processed post by id', async () => {
     const restClient = fakeRestClient({
       getPostsSince: vi.fn().mockResolvedValue([
+        // same-millisecond as the persisted watermark -- this is the post
+        // that was already processed and must be deduped by id, not skipped
+        // (or kept) based on timestamp alone (KAN-2 review F2).
+        post({ id: 'p0', createAt: 5000, message: 'already processed' }),
         post({ id: 'p1', createAt: 5001, message: 'first' }),
         post({ id: 'p2', createAt: 5002, message: 'second' }),
       ]),
     });
-    const stateStore = fakeStateStore({ readLastSeenMs: vi.fn().mockResolvedValue(5000) });
+    const stateStore = fakeStateStore({ readLastSeen: vi.fn().mockResolvedValue({ ms: 5000, id: 'p0' }) });
+    const socket = fakeSocketClientFactory();
+    const daemon = createDaemon({
+      restClient,
+      stateStore,
+      logger: silentLogger(),
+      operatorEmail: 'jon23d@gmail.com',
+      wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
+      token: 'tok-123',
+      createSocketClient: socket.factory,
+    });
+    await daemon.start();
+
+    await socket.fireOpen();
+
+    expect(restClient.getPostsSince).toHaveBeenCalledWith('dm-1', 5000);
+    expect(restClient.createPost).toHaveBeenCalledTimes(2);
+    expect(restClient.createPost).not.toHaveBeenCalledWith('dm-1', expect.stringContaining('already processed'));
+    expect(stateStore.writeLastSeen).toHaveBeenLastCalledWith(5002, 'p2');
+  });
+
+  it('falls back to the exclusive ms+1 boundary when the persisted watermark predates id tracking (legacy state file)', async () => {
+    const restClient = fakeRestClient({
+      getPostsSince: vi.fn().mockResolvedValue([post({ id: 'p1', createAt: 5001, message: 'first' })]),
+    });
+    const stateStore = fakeStateStore({ readLastSeen: vi.fn().mockResolvedValue({ ms: 5000, id: null }) });
     const socket = fakeSocketClientFactory();
     const daemon = createDaemon({
       restClient,
@@ -143,13 +195,12 @@ describe('createDaemon', () => {
     await socket.fireOpen();
 
     expect(restClient.getPostsSince).toHaveBeenCalledWith('dm-1', 5001);
-    expect(restClient.createPost).toHaveBeenCalledTimes(2);
-    expect(stateStore.writeLastSeenMs).toHaveBeenLastCalledWith(5002);
+    expect(restClient.createPost).toHaveBeenCalledTimes(1);
   });
 
   it('on socket open with no prior watermark (fresh install), skips catch-up entirely', async () => {
     const restClient = fakeRestClient();
-    const stateStore = fakeStateStore({ readLastSeenMs: vi.fn().mockResolvedValue(null) });
+    const stateStore = fakeStateStore({ readLastSeen: vi.fn().mockResolvedValue(null) });
     const socket = fakeSocketClientFactory();
     const daemon = createDaemon({
       restClient,
@@ -171,7 +222,7 @@ describe('createDaemon', () => {
     const restClient = fakeRestClient({
       getPostsSince: vi.fn().mockRejectedValue(new Error('mattermost unreachable')),
     });
-    const stateStore = fakeStateStore({ readLastSeenMs: vi.fn().mockResolvedValue(5000) });
+    const stateStore = fakeStateStore({ readLastSeen: vi.fn().mockResolvedValue({ ms: 5000, id: 'p0' }) });
     const logger = silentLogger();
     const socket = fakeSocketClientFactory();
     const daemon = createDaemon({
@@ -189,15 +240,16 @@ describe('createDaemon', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
-  it('logs loudly and does not throw when posting the reply fails', async () => {
+  it('logs loudly, does not throw, and does NOT advance the watermark when posting the reply fails', async () => {
     const restClient = fakeRestClient({
       createPost: vi.fn().mockRejectedValue(new Error('mattermost 500')),
     });
+    const stateStore = fakeStateStore();
     const logger = silentLogger();
     const socket = fakeSocketClientFactory();
     const daemon = createDaemon({
       restClient,
-      stateStore: fakeStateStore(),
+      stateStore,
       logger,
       operatorEmail: 'jon23d@gmail.com',
       wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
@@ -207,7 +259,12 @@ describe('createDaemon', () => {
     await daemon.start();
 
     await expect(socket.firePost(post())).resolves.toBeUndefined();
+
     expect(logger.error).toHaveBeenCalled();
+    // The whole point of KAN-2: a transient post failure must not silently
+    // drop the message. If the watermark advanced here, the next catch-up
+    // would treat this post as already handled and never retry it.
+    expect(stateStore.writeLastSeen).not.toHaveBeenCalled();
   });
 
   it('stop() stops the underlying socket client', async () => {

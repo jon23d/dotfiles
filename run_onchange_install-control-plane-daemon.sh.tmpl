@@ -16,6 +16,7 @@ set -e
 #
 #   service:  {{ include "dot_config/systemd/user/control-plane-daemon.service" | sha256sum }}
 #   package:  {{ include "dot_local/share/control-plane-daemon/package.json" | sha256sum }}
+#   lockfile: {{ include "dot_local/share/control-plane-daemon/package-lock.json" | sha256sum }}
 #   daemon:   {{ include "dot_local/share/control-plane-daemon/src/daemon.ts" | sha256sum }}
 #   env:      {{ include "dot_local/share/control-plane-daemon/src/env.ts" | sha256sum }}
 #   index:    {{ include "dot_local/share/control-plane-daemon/src/index.ts" | sha256sum }}
@@ -55,8 +56,8 @@ if [ -f "$secrets_file" ]; then
   # shellcheck disable=SC1090
   token="$(. "$secrets_file" && eval echo "\$$host_var")"
   if [ -n "$token" ]; then
-    mkdir -p "$env_dir"
     umask 077
+    mkdir -p "$env_dir"
     printf 'MATTERMOST_MCP_TOKEN=%s\n' "$token" > "$env_file"
     chmod 600 "$env_file"
     echo "install-control-plane-daemon: wrote $env_file from $host_var"

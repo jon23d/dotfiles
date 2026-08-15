@@ -52,12 +52,19 @@ export function createDaemon(config: DaemonConfig): Daemon {
 
     try {
       await restClient.createPost(context.dmChannelId, decision.replyMessage);
+      logger.info('posted reply to Mattermost', { postId: post.id, channelId: context.dmChannelId });
     } catch (err) {
       logger.error('failed to post reply to Mattermost', { err, postId: post.id });
+      // Do NOT advance the watermark here: if we did, the next catch-up
+      // would treat this post as already handled and it would never be
+      // retried, silently dropping the operator's message on a transient
+      // Mattermost failure (KAN-2 review F1). Leaving the watermark alone
+      // means this exact post is fetched and retried on the next catch-up.
+      return;
     }
 
     try {
-      await stateStore.writeLastSeenMs(post.createAt);
+      await stateStore.writeLastSeen(post.createAt, post.id);
     } catch (err) {
       logger.error('failed to persist last-seen watermark', { err, postId: post.id });
     }
@@ -78,12 +85,20 @@ export function createDaemon(config: DaemonConfig): Daemon {
   async function catchUp(): Promise<void> {
     if (!context) return;
     try {
-      const lastSeenMs = await stateStore.readLastSeenMs();
-      if (lastSeenMs === null) {
+      const lastSeen = await stateStore.readLastSeen();
+      if (lastSeen === null) {
         logger.info('no prior watermark -- skipping catch-up (fresh install)');
         return;
       }
-      const missed = await restClient.getPostsSince(context.dmChannelId, lastSeenMs + 1);
+      // Same-millisecond posts can share createAt, so a boundary based on
+      // time alone can silently skip one of them (KAN-2 review F2). When we
+      // know the last-processed post's id, fetch inclusively and dedupe by
+      // id, which is exact. Older state files that predate id tracking
+      // don't have an id to dedupe against, so they fall back to the
+      // original exclusive `ms + 1` boundary for this one catch-up.
+      const sinceMs = lastSeen.id === null ? lastSeen.ms + 1 : lastSeen.ms;
+      const fetched = await restClient.getPostsSince(context.dmChannelId, sinceMs);
+      const missed = lastSeen.id === null ? fetched : fetched.filter((p) => p.id !== lastSeen.id);
       logger.info('catch-up fetched missed posts', { count: missed.length });
       for (const post of missed) {
         await replyIfWarranted(post);

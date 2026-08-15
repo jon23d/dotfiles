@@ -18,33 +18,33 @@ describe('createFileStateStore', () => {
   it('returns null when no state file exists yet (fresh install, nothing to catch up on)', async () => {
     const store = createFileStateStore(join(dir, 'nested', 'state.json'));
 
-    expect(await store.readLastSeenMs()).toBeNull();
+    expect(await store.readLastSeen()).toBeNull();
   });
 
-  it('writes and reads back the last-seen timestamp, creating parent directories as needed', async () => {
+  it('writes and reads back the last-seen timestamp and id, creating parent directories as needed', async () => {
     const path = join(dir, 'nested', 'deeper', 'state.json');
     const store = createFileStateStore(path);
 
-    await store.writeLastSeenMs(1_723_000_000_000);
+    await store.writeLastSeen(1_723_000_000_000, 'post-abc');
 
-    expect(await store.readLastSeenMs()).toBe(1_723_000_000_000);
+    expect(await store.readLastSeen()).toEqual({ ms: 1_723_000_000_000, id: 'post-abc' });
   });
 
   it('overwrites the previous value on subsequent writes', async () => {
     const path = join(dir, 'state.json');
     const store = createFileStateStore(path);
 
-    await store.writeLastSeenMs(100);
-    await store.writeLastSeenMs(200);
+    await store.writeLastSeen(100, 'post-1');
+    await store.writeLastSeen(200, 'post-2');
 
-    expect(await store.readLastSeenMs()).toBe(200);
+    expect(await store.readLastSeen()).toEqual({ ms: 200, id: 'post-2' });
   });
 
   it('persists valid JSON on disk (not a half-written/corrupt file) after write', async () => {
     const path = join(dir, 'state.json');
     const store = createFileStateStore(path);
 
-    await store.writeLastSeenMs(42);
+    await store.writeLastSeen(42, 'post-1');
 
     const raw = await readFile(path, 'utf8');
     expect(() => JSON.parse(raw)).not.toThrow();
@@ -55,6 +55,14 @@ describe('createFileStateStore', () => {
     await writeFile(path, 'not json{{{', 'utf8');
     const store = createFileStateStore(path);
 
-    await expect(store.readLastSeenMs()).rejects.toThrow(/state file/i);
+    await expect(store.readLastSeen()).rejects.toThrow(/state file/i);
+  });
+
+  it('reads a legacy state file (written before id tracking existed) with id as null', async () => {
+    const path = join(dir, 'state.json');
+    await writeFile(path, JSON.stringify({ lastSeenMs: 1_723_000_000_000 }), 'utf8');
+    const store = createFileStateStore(path);
+
+    expect(await store.readLastSeen()).toEqual({ ms: 1_723_000_000_000, id: null });
   });
 });

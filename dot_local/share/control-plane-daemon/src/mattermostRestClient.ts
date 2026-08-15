@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { createLogger } from './logger.js';
+import type { Logger } from './logger.js';
 import type { IncomingPost } from './types.js';
 
 export interface MattermostRestClient {
@@ -12,7 +14,16 @@ export interface MattermostRestClient {
 export interface MattermostRestClientConfig {
   baseUrl: string;
   token: string;
+  logger?: Logger;
 }
+
+// Mattermost's `since` query param is documented to return at most this
+// many posts per call, with no page/per_page cursor of its own (since must
+// not be combined with page/per_page/before/after). A long outage can
+// accumulate more than this, so getPostsSince below loops, re-issuing with
+// a later boundary whenever a page comes back at exactly the cap, instead
+// of silently returning a truncated result (KAN-2 review F3).
+const SINCE_PAGE_CAP = 1000;
 
 const userSchema = z.object({ id: z.string().min(1) });
 const channelSchema = z.object({ id: z.string().min(1) });
@@ -36,7 +47,7 @@ const postsPageSchema = z.object({
  * existing).
  */
 export function createMattermostRestClient(config: MattermostRestClientConfig): MattermostRestClient {
-  const { baseUrl, token } = config;
+  const { baseUrl, token, logger = createLogger('mattermostRestClient') } = config;
 
   async function request(method: string, path: string, body?: unknown): Promise<unknown> {
     const url = `${baseUrl}${path}`;
@@ -84,22 +95,41 @@ export function createMattermostRestClient(config: MattermostRestClientConfig): 
     },
 
     async getPostsSince(channelId, sinceMs) {
-      const data = await request(
-        'GET',
-        `/api/v4/channels/${encodeURIComponent(channelId)}/posts?since=${sinceMs}`,
-      );
-      const page = postsPageSchema.parse(data);
-      return page.order
-        .map((id) => page.posts[id])
-        .filter((p): p is z.infer<typeof postSchema> => p !== undefined)
-        .map((p) => ({
-          id: p.id,
-          userId: p.user_id,
-          channelId: p.channel_id,
-          message: p.message,
-          createAt: p.create_at,
-        }))
-        .sort((a, b) => a.createAt - b.createAt);
+      const all: IncomingPost[] = [];
+      let cursor = sinceMs;
+
+      for (;;) {
+        const data = await request(
+          'GET',
+          `/api/v4/channels/${encodeURIComponent(channelId)}/posts?since=${cursor}`,
+        );
+        const page = postsPageSchema.parse(data);
+        const posts = page.order
+          .map((id) => page.posts[id])
+          .filter((p): p is z.infer<typeof postSchema> => p !== undefined)
+          .map((p) => ({
+            id: p.id,
+            userId: p.user_id,
+            channelId: p.channel_id,
+            message: p.message,
+            createAt: p.create_at,
+          }));
+        all.push(...posts);
+
+        if (posts.length < SINCE_PAGE_CAP) break;
+
+        const newestMs = posts.reduce((max, p) => Math.max(max, p.createAt), cursor);
+        if (newestMs < cursor) break; // defensive: never loop forever if the API misbehaves
+
+        logger.warn('catch-up hit the Mattermost `since` page cap -- fetching the next page', {
+          channelId,
+          cursor,
+          pageSize: posts.length,
+        });
+        cursor = newestMs + 1;
+      }
+
+      return all.sort((a, b) => a.createAt - b.createAt);
     },
   };
 }

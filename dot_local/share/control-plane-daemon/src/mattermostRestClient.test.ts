@@ -1,6 +1,6 @@
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createMattermostRestClient } from './mattermostRestClient.js';
 
 const BASE_URL = 'https://mattermost.example.com';
@@ -94,6 +94,70 @@ describe('createMattermostRestClient', () => {
       message: 'first',
       createAt: 1100,
     });
+  });
+
+  it('paginates past the `since` endpoint\'s 1000-post page cap instead of silently truncating a large backlog', async () => {
+    const CAP = 1000;
+    const firstPage = Array.from({ length: CAP }, (_, i) => ({
+      id: `p${i}`,
+      user_id: 'jon-1',
+      channel_id: 'dm-1',
+      message: `msg${i}`,
+      create_at: 1000 + i,
+    }));
+    const secondPage = [
+      { id: 'p-last', user_id: 'jon-1', channel_id: 'dm-1', message: 'final', create_at: 1000 + CAP },
+    ];
+    const newestFirstPageMs = 1000 + CAP - 1;
+
+    let calls = 0;
+    server.use(
+      http.get(`${BASE_URL}/api/v4/channels/:channelId/posts`, ({ request }) => {
+        calls += 1;
+        const since = new URL(request.url).searchParams.get('since');
+        if (calls === 1) {
+          expect(since).toBe('1000');
+          return HttpResponse.json({
+            order: firstPage.map((p) => p.id),
+            posts: Object.fromEntries(firstPage.map((p) => [p.id, p])),
+          });
+        }
+        expect(since).toBe(String(newestFirstPageMs + 1));
+        return HttpResponse.json({
+          order: secondPage.map((p) => p.id),
+          posts: Object.fromEntries(secondPage.map((p) => [p.id, p])),
+        });
+      }),
+    );
+
+    const warn = vi.fn();
+    const c = createMattermostRestClient({
+      baseUrl: BASE_URL,
+      token: TOKEN,
+      logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+    });
+
+    const posts = await c.getPostsSince('dm-1', 1000);
+
+    expect(calls).toBe(2);
+    expect(posts).toHaveLength(CAP + 1);
+    expect(posts[posts.length - 1]?.id).toBe('p-last');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('page cap'), expect.any(Object));
+  });
+
+  it('does not paginate further when a page comes back short of the cap', async () => {
+    server.use(
+      http.get(`${BASE_URL}/api/v4/channels/:channelId/posts`, () =>
+        HttpResponse.json({
+          order: ['p1'],
+          posts: { p1: { id: 'p1', user_id: 'jon-1', channel_id: 'dm-1', message: 'only one', create_at: 1100 } },
+        }),
+      ),
+    );
+
+    const posts = await client().getPostsSince('dm-1', 1000);
+
+    expect(posts).toHaveLength(1);
   });
 
   it('throws a loud error including status and body when the API responds non-2xx', async () => {
