@@ -21,6 +21,7 @@ function fakeRestClient(overrides: Partial<MattermostRestClient> = {}): Mattermo
     getMyTeams: vi.fn().mockResolvedValue([{ id: 'team-1', name: 'devops' }] satisfies Team[]),
     createPrivateChannel: vi.fn().mockResolvedValue('new-channel-id'),
     addChannelMember: vi.fn().mockResolvedValue(undefined),
+    archiveChannel: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -188,6 +189,46 @@ describe('runStart', () => {
     expect(sessionStore.markStopped).toHaveBeenCalledWith(expect.any(String));
   });
 
+  it('proactively posts a clear notice into the session\'s own channel when its harness process exits unexpectedly (review kan5-1 F4)', async () => {
+    let capturedExitCallback: ((info: { code: number | null }) => void) | undefined;
+    const handle = fakeHandle({
+      onExit: vi.fn((cb: (info: { code: number | null }) => void) => {
+        capturedExitCallback = cb;
+      }),
+    });
+    const adapter = fakeOpencodeAdapter({ start: vi.fn().mockResolvedValue(handle) });
+    const restClient = fakeRestClient();
+    const d = deps({ restClient, harnesses: { opencode: adapter } });
+
+    await runStart(['opencode', '/home/jon/project'], d);
+    capturedExitCallback?.({ code: 1 });
+    // The post happens fire-and-forget inside the onExit callback -- flush microtasks.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(restClient.createPost).toHaveBeenCalledWith('new-channel-id', expect.stringMatching(/crash|no longer running|exited/i));
+  });
+
+  it('logs loudly (and does not throw) if posting the unexpected-exit notice itself fails', async () => {
+    let capturedExitCallback: ((info: { code: number | null }) => void) | undefined;
+    const handle = fakeHandle({
+      onExit: vi.fn((cb: (info: { code: number | null }) => void) => {
+        capturedExitCallback = cb;
+      }),
+    });
+    const adapter = fakeOpencodeAdapter({ start: vi.fn().mockResolvedValue(handle) });
+    const restClient = fakeRestClient({ createPost: vi.fn().mockRejectedValue(new Error('mattermost 500')) });
+    const logger = silentLogger();
+    const d = deps({ restClient, logger, harnesses: { opencode: adapter } });
+
+    await runStart(['opencode', '/home/jon/project'], d);
+    expect(() => capturedExitCallback?.({ code: 1 })).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(logger.error).toHaveBeenCalled();
+  });
+
   it('when the harness fails to start, surfaces a clear error and never creates a channel', async () => {
     const adapter = fakeOpencodeAdapter({ start: vi.fn().mockRejectedValue(new Error('opencode serve did not become ready')) });
     const restClient = fakeRestClient();
@@ -218,7 +259,7 @@ describe('runStart', () => {
     expect(sessionRuntime.register).not.toHaveBeenCalled();
   });
 
-  it('when adding the operator to the new channel fails, stops the harness session and registers nothing', async () => {
+  it('when adding the operator to the new channel fails, stops the harness session, archives the orphaned channel, and registers nothing (review kan5-1 F3)', async () => {
     const handle = fakeHandle();
     const adapter = fakeOpencodeAdapter({ start: vi.fn().mockResolvedValue(handle) });
     const restClient = fakeRestClient({ addChannelMember: vi.fn().mockRejectedValue(new Error('forbidden')) });
@@ -230,5 +271,41 @@ describe('runStart', () => {
     expect(reply).toMatch(/channel/i);
     expect(handle.stop).toHaveBeenCalled();
     expect(sessionStore.addSession).not.toHaveBeenCalled();
+    // The channel WAS created (only adding the operator failed) -- it must
+    // be cleaned up, not left as an invisible orphan nothing references.
+    expect(restClient.archiveChannel).toHaveBeenCalledWith('new-channel-id');
+    // The reply must not claim the channel "could not be created" -- it
+    // was created; only adding the operator to it failed. That's a
+    // different, more specific failure and the operator deserves the
+    // accurate story.
+    expect(reply).not.toMatch(/could not be created/i);
+    expect(reply).toMatch(/forbidden/);
+  });
+
+  it('when channel creation itself fails, does not attempt to archive anything (there is no channel to clean up)', async () => {
+    const handle = fakeHandle();
+    const adapter = fakeOpencodeAdapter({ start: vi.fn().mockResolvedValue(handle) });
+    const restClient = fakeRestClient({ createPrivateChannel: vi.fn().mockRejectedValue(new Error('channel name already exists')) });
+    const d = deps({ restClient, harnesses: { opencode: adapter } });
+
+    await runStart(['opencode', '/home/jon/project'], d);
+
+    expect(restClient.archiveChannel).not.toHaveBeenCalled();
+  });
+
+  it('when archiving the orphaned channel also fails, still reports the original addChannelMember failure and does not throw', async () => {
+    const handle = fakeHandle();
+    const adapter = fakeOpencodeAdapter({ start: vi.fn().mockResolvedValue(handle) });
+    const restClient = fakeRestClient({
+      addChannelMember: vi.fn().mockRejectedValue(new Error('forbidden')),
+      archiveChannel: vi.fn().mockRejectedValue(new Error('archive also failed')),
+    });
+    const logger = silentLogger();
+    const d = deps({ restClient, logger, harnesses: { opencode: adapter } });
+
+    const reply = await runStart(['opencode', '/home/jon/project'], d);
+
+    expect(reply).toMatch(/forbidden/);
+    expect(logger.error).toHaveBeenCalled();
   });
 });

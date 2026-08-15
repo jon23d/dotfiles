@@ -30,6 +30,20 @@ describe('createFileSessionNumberStore', () => {
     expect(await store.nextSessionNumber()).toBe(3);
   });
 
+  it('serializes concurrent calls so two near-simultaneous callers (e.g. two racing `start` commands) never get the same number (review kan5-1 F2)', async () => {
+    const path = join(dir, 'session-number.json');
+    const store = createFileSessionNumberStore(path);
+
+    const [a, b, c] = await Promise.all([
+      store.nextSessionNumber(),
+      store.nextSessionNumber(),
+      store.nextSessionNumber(),
+    ]);
+
+    expect(new Set([a, b, c]).size).toBe(3);
+    expect([a, b, c].sort((x, y) => x - y)).toEqual([1, 2, 3]);
+  });
+
   it('continues from the persisted value across separate store instances (e.g. a daemon restart)', async () => {
     const path = join(dir, 'session-number.json');
     await createFileSessionNumberStore(path).nextSessionNumber(); // -> 1

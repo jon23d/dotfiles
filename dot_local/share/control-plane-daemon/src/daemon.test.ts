@@ -24,6 +24,7 @@ function fakeRestClient(overrides: Partial<MattermostRestClient> = {}): Mattermo
     getMyTeams: vi.fn().mockResolvedValue([]),
     createPrivateChannel: vi.fn().mockResolvedValue('new-channel-id'),
     addChannelMember: vi.fn().mockResolvedValue(undefined),
+    archiveChannel: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }

@@ -122,6 +122,55 @@ describe('createOpencodeHarness', () => {
     await rm(dir2, { recursive: true, force: true });
   });
 
+  it('spawns the shared server exactly once even when two `start()` calls race concurrently with no await between them (review kan5-1 F1)', async () => {
+    const spawnProcess = vi.fn().mockImplementation(() => fakeChildProcess());
+    server.use(
+      healthyHandler(),
+      http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+    );
+
+    // `pickPort` is the exact yield point F1 flagged (the `await` inside
+    // ensureSharedServer between its "is there already a shared server"
+    // check and actually assigning one). Gating it manually -- rather than
+    // just firing two `start()` calls and hoping real `fs.stat` timing
+    // inside `validateFolder` happens to interleave them -- makes this
+    // deterministic: hold the gate open long enough for a second, buggy
+    // concurrent call to also reach `pickPort` (proving the race exists)
+    // before releasing it and letting both calls proceed.
+    let pickPortCalls = 0;
+    let releaseGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const pickPort = vi.fn(async () => {
+      pickPortCalls += 1;
+      await gate;
+      return PORT;
+    });
+    const harness = createOpencodeHarness({ spawnProcess, pickPort });
+    const dir2 = await mkdtemp(join(tmpdir(), 'control-plane-daemon-opencode-test-race-'));
+
+    // Deliberately not awaited individually -- this is what daemon.ts's
+    // fire-and-forget `onPost` dispatch actually does when two `start`
+    // commands arrive close together.
+    const p1 = harness.start({ folder: dir, logger: silentLogger() });
+    const p2 = harness.start({ folder: dir2, logger: silentLogger() });
+    await vi.waitFor(() => expect(pickPortCalls).toBeGreaterThanOrEqual(1));
+    // Give a second, racing `ensureSharedServer()` call every chance to
+    // also reach `pickPort` before the gate opens -- real time, not just a
+    // microtask flush, since `validateFolder`'s `fs.stat` is real I/O.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releaseGate?.();
+
+    const [handleA, handleB] = await Promise.all([p1, p2]);
+
+    expect(handleA).toBeDefined();
+    expect(handleB).toBeDefined();
+    expect(pickPortCalls).toBe(1);
+    expect(spawnProcess).toHaveBeenCalledTimes(1);
+    await rm(dir2, { recursive: true, force: true });
+  });
+
   it('sendPrompt posts the message as a text part to prompt_async, scoped to the session\'s directory', async () => {
     const child = fakeChildProcess();
     const spawnProcess = vi.fn().mockReturnValue(child);

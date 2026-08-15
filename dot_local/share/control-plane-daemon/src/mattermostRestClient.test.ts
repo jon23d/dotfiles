@@ -251,4 +251,25 @@ describe('createMattermostRestClient', () => {
 
     await expect(client().addChannelMember('chan-1', 'jon-user-id')).rejects.toThrow(/403/);
   });
+
+  it('archiveChannel deletes (archives) the channel by id (review kan5-1 F3 cleanup)', async () => {
+    server.use(
+      http.delete(`${BASE_URL}/api/v4/channels/chan-1`, ({ request }) => {
+        expect(request.headers.get('Authorization')).toBe(`Bearer ${TOKEN}`);
+        return HttpResponse.json({ status: 'OK' });
+      }),
+    );
+
+    await expect(client().archiveChannel('chan-1')).resolves.toBeUndefined();
+  });
+
+  it('archiveChannel throws a loud error on failure', async () => {
+    server.use(
+      http.delete(`${BASE_URL}/api/v4/channels/chan-1`, () =>
+        HttpResponse.json({ message: 'forbidden' }, { status: 403 }),
+      ),
+    );
+
+    await expect(client().archiveChannel('chan-1')).rejects.toThrow(/403/);
+  });
 });

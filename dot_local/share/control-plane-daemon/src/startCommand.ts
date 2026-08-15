@@ -116,10 +116,18 @@ export async function runStart(args: string[], deps: StartDeps): Promise<string>
     return `Could not start a \`${harnessName}\` session in \`${stripBackticks(folder)}\`: ${errMessage(err)}`;
   }
 
+  // Split into two try/catches (review kan5-1 F3): `createPrivateChannel`
+  // and `addChannelMember` fail differently and need different responses.
+  // If channel creation itself fails, nothing was created and there's
+  // nothing to clean up beyond the harness session. If only adding the
+  // operator fails, the channel WAS created -- claiming otherwise in the
+  // reply would be false, and leaving that channel behind (with only the
+  // bot as a member, since the operator was never added) would leak it:
+  // nothing in SessionStore references it, so it's invisible to `list` and
+  // to the operator, and would never be cleaned up on its own.
   let channelId: string;
   try {
     channelId = await deps.restClient.createPrivateChannel(teamId, channelSlug, identifier);
-    await deps.restClient.addChannelMember(channelId, deps.operatorUserId);
   } catch (err) {
     deps.logger.error('failed to create the session channel -- stopping the now-orphaned harness session', {
       err,
@@ -127,6 +135,28 @@ export async function runStart(args: string[], deps: StartDeps): Promise<string>
     });
     handle.stop();
     return `Session started but its Mattermost channel could not be created (${errMessage(err)}). The session has been stopped -- nothing is left running.`;
+  }
+
+  try {
+    await deps.restClient.addChannelMember(channelId, deps.operatorUserId);
+  } catch (err) {
+    deps.logger.error(
+      'failed to add the operator to the new session channel -- stopping the session and archiving the now-orphaned channel',
+      { err, identifier, channelId },
+    );
+    handle.stop();
+    try {
+      await deps.restClient.archiveChannel(channelId);
+    } catch (archiveErr) {
+      // Best-effort cleanup: the channel may be left behind (a human will
+      // need to archive it manually), but this must never mask the real,
+      // original failure the operator needs to see.
+      deps.logger.error('failed to archive the orphaned session channel (best-effort cleanup)', {
+        err: archiveErr,
+        channelId,
+      });
+    }
+    return `Session and its channel \`${identifier}\` were created, but adding you to the channel failed (${errMessage(err)}). The session has been stopped and the channel has been cleaned up.`;
   }
 
   const session: Session = {
@@ -141,8 +171,29 @@ export async function runStart(args: string[], deps: StartDeps): Promise<string>
   deps.sessionStore.addSession(session);
   deps.sessionRuntime.register(channelId, handle);
   handle.onExit(({ code }) => {
-    deps.logger.error('harness session exited -- marking it stopped', { identifier, channelId, code });
+    deps.logger.error('harness session exited -- marking it stopped and notifying the operator', {
+      identifier,
+      channelId,
+      code,
+    });
     deps.sessionStore.markStopped(session.id);
+    // Proactive, not reactive (review kan5-1 F4): without this, the
+    // operator only learns a session died the next time they happen to
+    // message its now-dead channel (daemon.ts's forwardToSessionIfApplicable
+    // handles that reactive case). Fire-and-forget, loudly logged on
+    // failure -- this callback is synchronous void per HarnessSessionHandle,
+    // so nothing here can be awaited by the caller. Always "unexpected"
+    // today: KAN-6 (`stop`) doesn't exist yet, so nothing in this codebase
+    // calls `handle.stop()` after a session is fully registered -- the only
+    // current `stop()` call sites are the failure-cleanup paths above,
+    // which all return before onExit is ever registered. When `stop` lands,
+    // it will need a way to suppress this notice for an operator-requested
+    // stop (e.g. a flag set just before calling `handle.stop()`).
+    deps.restClient
+      .createPost(channelId, `Session \`${identifier}\` crashed unexpectedly and is no longer running.`)
+      .catch((err: unknown) => {
+        deps.logger.error('failed to notify the operator that a session crashed', { err, identifier, channelId });
+      });
   });
 
   return `Started \`${identifier}\` (${harnessName} @ ${folder}). Continue the conversation in its new channel.`;

@@ -23,6 +23,10 @@ export interface MattermostRestClient {
    * KAN-5 Jira comment). Returns the new channel's id. */
   createPrivateChannel(teamId: string, name: string, displayName: string): Promise<string>;
   addChannelMember(channelId: string, userId: string): Promise<void>;
+  /** Archives (soft-deletes) a channel -- used to clean up a session channel
+   * that was created but couldn't be fully set up (e.g. the operator
+   * couldn't be added to it), so it doesn't leak as an invisible orphan. */
+  archiveChannel(channelId: string): Promise<void>;
 }
 
 export interface MattermostRestClientConfig {
@@ -165,6 +169,10 @@ export function createMattermostRestClient(config: MattermostRestClientConfig): 
 
     async addChannelMember(channelId, userId) {
       await request('POST', `/api/v4/channels/${encodeURIComponent(channelId)}/members`, { user_id: userId });
+    },
+
+    async archiveChannel(channelId) {
+      await request('DELETE', `/api/v4/channels/${encodeURIComponent(channelId)}`);
     },
   };
 }

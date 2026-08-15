@@ -107,7 +107,17 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     readyPollIntervalMs = 150,
   } = config;
 
-  let shared: SharedServer | undefined;
+  // Caches the in-flight *promise*, not just its resolved value (review
+  // kan5-1 F1). `ensureSharedServer` used to check-then-await-then-assign a
+  // plain `shared` variable, and the `await pickPort()` in between yielded
+  // the event loop -- daemon.ts dispatches incoming posts fire-and-forget
+  // (never serialized), so two `start` commands arriving close together
+  // could both observe "no shared server yet" and each spawn their own
+  // `opencode serve` child, silently leaking one. Setting `sharedPromise`
+  // synchronously, before any `await`, closes that window: a second
+  // concurrent caller always finds the in-progress promise already cached
+  // and awaits that instead of racing a second spawn.
+  let sharedPromise: Promise<SharedServer> | undefined;
 
   function notifyExit(server: SharedServer, code: number | null): void {
     server.exited = true;
@@ -115,9 +125,7 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     for (const cb of server.exitCallbacks.splice(0)) cb({ code });
   }
 
-  async function ensureSharedServer(logger: Logger): Promise<SharedServer> {
-    if (shared && !shared.exited) return shared;
-
+  async function spawnSharedServer(logger: Logger): Promise<SharedServer> {
     const port = await pickPort();
     const baseUrl = `http://127.0.0.1:${port}`;
     const child = spawnProcess('opencode', ['serve', '--port', String(port), '--hostname', '127.0.0.1'], {
@@ -125,7 +133,6 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     });
 
     const server: SharedServer = { baseUrl, exited: false, exitCode: null, exitCallbacks: [], child };
-    shared = server;
 
     let stderrOutput = '';
     child.stderr?.on('data', (chunk) => {
@@ -158,6 +165,38 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     }
 
     logger.info('shared opencode serve process is ready', { port });
+    return server;
+  }
+
+  async function ensureSharedServer(logger: Logger): Promise<SharedServer> {
+    if (!sharedPromise) {
+      sharedPromise = spawnSharedServer(logger);
+    }
+    const attempted = sharedPromise;
+
+    let server: SharedServer;
+    try {
+      server = await attempted;
+    } catch (err) {
+      // The spawn itself failed. Clear the cache only if nobody else has
+      // already replaced it with a fresh attempt, so the next `start` call
+      // gets a real retry instead of forever awaiting this same rejection.
+      if (sharedPromise === attempted) sharedPromise = undefined;
+      throw err;
+    }
+
+    if (server.exited) {
+      // Stale -- the shared process died since it was spawned. Respawn,
+      // but only the first caller to notice does so (compare-and-swap on
+      // `sharedPromise`); any other concurrent caller that also observes
+      // the staleness converges on the same fresh attempt instead of
+      // triggering its own.
+      if (sharedPromise === attempted) {
+        sharedPromise = spawnSharedServer(logger);
+      }
+      return ensureSharedServer(logger);
+    }
+
     return server;
   }
 
