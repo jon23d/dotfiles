@@ -293,7 +293,7 @@ describe('runStart', () => {
     expect(restClient.archiveChannel).not.toHaveBeenCalled();
   });
 
-  it('when archiving the orphaned channel also fails, still reports the original addChannelMember failure and does not throw', async () => {
+  it('when archiving the orphaned channel also fails, still reports the original addChannelMember failure, does not throw, and does NOT falsely claim the channel was cleaned up (review kan5-2 F5)', async () => {
     const handle = fakeHandle();
     const adapter = fakeOpencodeAdapter({ start: vi.fn().mockResolvedValue(handle) });
     const restClient = fakeRestClient({
@@ -307,5 +307,23 @@ describe('runStart', () => {
 
     expect(reply).toMatch(/forbidden/);
     expect(logger.error).toHaveBeenCalled();
+    // The archive attempt itself failed -- the channel is still there,
+    // leaked. The reply must not tell the operator it was cleaned up when
+    // it wasn't (review kan5-2 F5), and should instead say it needs manual
+    // removal.
+    expect(reply).not.toMatch(/channel has been cleaned up/i);
+    expect(reply).toMatch(/manual|could not be (automatically )?(cleaned up|removed|archived)/i);
+  });
+
+  it('when archiving the orphaned channel succeeds, the reply accurately says the channel was cleaned up', async () => {
+    const handle = fakeHandle();
+    const adapter = fakeOpencodeAdapter({ start: vi.fn().mockResolvedValue(handle) });
+    const restClient = fakeRestClient({ addChannelMember: vi.fn().mockRejectedValue(new Error('forbidden')) });
+    const d = deps({ restClient, harnesses: { opencode: adapter } });
+
+    const reply = await runStart(['opencode', '/home/jon/project'], d);
+
+    expect(restClient.archiveChannel).toHaveBeenCalledWith('new-channel-id');
+    expect(reply).toMatch(/channel has been cleaned up/i);
   });
 });

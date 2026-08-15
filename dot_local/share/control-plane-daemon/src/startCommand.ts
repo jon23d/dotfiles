@@ -145,18 +145,29 @@ export async function runStart(args: string[], deps: StartDeps): Promise<string>
       { err, identifier, channelId },
     );
     handle.stop();
+    // Best-effort cleanup: the channel may still be left behind if this
+    // itself fails (a human will need to archive it manually), but that
+    // failure must never mask the real, original `addChannelMember` error
+    // the operator needs to see -- it's only logged, not rethrown. The
+    // reply below branches on whether the archive actually succeeded
+    // (review kan5-2 F5: the previous unconditional "cleaned up" message
+    // was itself false whenever this catch fired, the same category of
+    // "operator told something false about an orphaned resource" defect
+    // the addChannelMember branch above exists to avoid).
+    let archived = true;
     try {
       await deps.restClient.archiveChannel(channelId);
     } catch (archiveErr) {
-      // Best-effort cleanup: the channel may be left behind (a human will
-      // need to archive it manually), but this must never mask the real,
-      // original failure the operator needs to see.
+      archived = false;
       deps.logger.error('failed to archive the orphaned session channel (best-effort cleanup)', {
         err: archiveErr,
         channelId,
       });
     }
-    return `Session and its channel \`${identifier}\` were created, but adding you to the channel failed (${errMessage(err)}). The session has been stopped and the channel has been cleaned up.`;
+    const cleanupNote = archived
+      ? 'The session has been stopped and the channel has been cleaned up.'
+      : 'The session has been stopped, but the channel could not be automatically cleaned up and will need manual removal.';
+    return `Session and its channel \`${identifier}\` were created, but adding you to the channel failed (${errMessage(err)}). ${cleanupNote}`;
   }
 
   const session: Session = {
