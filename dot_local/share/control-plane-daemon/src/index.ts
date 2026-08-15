@@ -4,6 +4,7 @@ import { createDaemon } from './daemon.js';
 import { loadEnv } from './env.js';
 import { createLogger } from './logger.js';
 import { createMattermostRestClient } from './mattermostRestClient.js';
+import { createInMemorySessionStore } from './sessionStore.js';
 import { createFileStateStore } from './stateStore.js';
 
 const logger = createLogger('index');
@@ -31,10 +32,15 @@ async function main(): Promise<void> {
 
   const restClient = createMattermostRestClient({ baseUrl: env.MATTERMOST_URL, token: env.MATTERMOST_MCP_TOKEN });
   const stateStore = createFileStateStore(stateFilePath);
+  // In-memory only -- nothing populates this yet (KAN-5/KAN-6 land the
+  // commands that create/end real sessions), so `list` sees an empty store
+  // on every daemon start until those ship. See sessionStore.ts.
+  const sessionStore = createInMemorySessionStore();
 
   const daemon = createDaemon({
     restClient,
     stateStore,
+    sessionStore,
     logger: createLogger('daemon'),
     operatorEmail: env.OPERATOR_EMAIL,
     wsUrl: wsUrlFor(env.MATTERMOST_URL),

@@ -3,6 +3,7 @@ import { createDaemon } from './daemon.js';
 import { UNKNOWN_COMMAND_REPLY } from './messageRouter.js';
 import type { Logger } from './logger.js';
 import type { MattermostRestClient } from './mattermostRestClient.js';
+import type { SessionStore } from './sessionStore.js';
 import type { MattermostSocketClient, MattermostSocketClientConfig } from './socketClient.js';
 import type { StateStore } from './stateStore.js';
 import type { IncomingPost } from './types.js';
@@ -26,6 +27,17 @@ function fakeStateStore(overrides: Partial<StateStore> = {}): StateStore {
   return {
     readLastSeen: vi.fn().mockResolvedValue(null),
     writeLastSeen: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+/** Nothing writes real sessions yet (KAN-5/KAN-6 land later), so these tests
+ * only need an empty store -- they're exercising daemon wiring, not `list`'s
+ * own rendering logic (that's covered directly in messageRouter.test.ts /
+ * listCommand.test.ts). */
+function fakeSessionStore(overrides: Partial<SessionStore> = {}): SessionStore {
+  return {
+    listSessions: vi.fn().mockReturnValue([]),
     ...overrides,
   };
 }
@@ -65,6 +77,7 @@ describe('createDaemon', () => {
     const daemon = createDaemon({
       restClient,
       stateStore: fakeStateStore(),
+      sessionStore: fakeSessionStore(),
       logger: silentLogger(),
       operatorEmail: 'jon23d@gmail.com',
       wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
@@ -87,6 +100,7 @@ describe('createDaemon', () => {
     const daemon = createDaemon({
       restClient,
       stateStore,
+      sessionStore: fakeSessionStore(),
       logger: silentLogger(),
       operatorEmail: 'jon23d@gmail.com',
       wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
@@ -95,7 +109,9 @@ describe('createDaemon', () => {
     });
     await daemon.start();
 
-    await socket.firePost(post({ id: 'p1', createAt: 5000 }));
+    // `list` is now a real registered command (KAN-4), so this test uses an
+    // explicitly-unrecognized message rather than post()'s default.
+    await socket.firePost(post({ id: 'p1', createAt: 5000, message: 'boguscommand' }));
 
     expect(restClient.createPost).toHaveBeenCalledWith('dm-1', UNKNOWN_COMMAND_REPLY);
     expect(stateStore.writeLastSeen).toHaveBeenCalledWith(5000, 'p1');
@@ -108,6 +124,7 @@ describe('createDaemon', () => {
     const daemon = createDaemon({
       restClient,
       stateStore: fakeStateStore(),
+      sessionStore: fakeSessionStore(),
       logger,
       operatorEmail: 'jon23d@gmail.com',
       wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
@@ -130,6 +147,7 @@ describe('createDaemon', () => {
     const daemon = createDaemon({
       restClient,
       stateStore: fakeStateStore(),
+      sessionStore: fakeSessionStore(),
       logger: silentLogger(),
       operatorEmail: 'jon23d@gmail.com',
       wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
@@ -173,6 +191,7 @@ describe('createDaemon', () => {
     const daemon = createDaemon({
       restClient,
       stateStore,
+      sessionStore: fakeSessionStore(),
       logger: silentLogger(),
       operatorEmail: 'jon23d@gmail.com',
       wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
@@ -203,6 +222,7 @@ describe('createDaemon', () => {
     const daemon = createDaemon({
       restClient,
       stateStore,
+      sessionStore: fakeSessionStore(),
       logger: silentLogger(),
       operatorEmail: 'jon23d@gmail.com',
       wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
@@ -224,6 +244,7 @@ describe('createDaemon', () => {
     const daemon = createDaemon({
       restClient,
       stateStore,
+      sessionStore: fakeSessionStore(),
       logger: silentLogger(),
       operatorEmail: 'jon23d@gmail.com',
       wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
@@ -247,6 +268,7 @@ describe('createDaemon', () => {
     const daemon = createDaemon({
       restClient,
       stateStore,
+      sessionStore: fakeSessionStore(),
       logger,
       operatorEmail: 'jon23d@gmail.com',
       wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
@@ -269,6 +291,7 @@ describe('createDaemon', () => {
     const daemon = createDaemon({
       restClient,
       stateStore,
+      sessionStore: fakeSessionStore(),
       logger,
       operatorEmail: 'jon23d@gmail.com',
       wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
@@ -291,6 +314,7 @@ describe('createDaemon', () => {
     const daemon = createDaemon({
       restClient: fakeRestClient(),
       stateStore: fakeStateStore(),
+      sessionStore: fakeSessionStore(),
       logger: silentLogger(),
       operatorEmail: 'jon23d@gmail.com',
       wsUrl: 'wss://mattermost.example.com/api/v4/websocket',

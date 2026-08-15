@@ -1,3 +1,4 @@
+import { stripBackticks } from './markdown.js';
 import type { CommandDefinition } from './commands.js';
 
 /**
@@ -10,17 +11,6 @@ import type { CommandDefinition } from './commands.js';
 export function renderCommandList(commands: readonly CommandDefinition[]): string {
   const lines = commands.map((command) => `\`${command.name}\` - ${command.summary}`);
   return ['Available commands:', ...lines].join('\n');
-}
-
-/**
- * Strips backticks from a value that's about to be interpolated into a
- * backtick-quoted span of a reply. Without this, a command name containing
- * its own backtick (e.g. `` `x` ``, from `help \`x\``) would produce
- * mismatched/nested backticks that render oddly as Mattermost markdown
- * (review kan3-1 F1).
- */
-function stripBackticks(value: string): string {
-  return value.replace(/`/g, '');
 }
 
 /**
