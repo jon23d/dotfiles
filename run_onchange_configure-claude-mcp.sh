@@ -47,10 +47,16 @@ add_server context7 '{
   }
 }'
 
+# atlassian-python-api is pinned below 4: 4.x restructured the Confluence
+# client so Confluence.factory() returns a Cloud object without get_page_by_id,
+# cql or get_all_pages_from_space_raw, which mcp-atlassian still calls. Every
+# Confluence tool then fails with "'Cloud' object has no attribute ...", while
+# Jira tools keep working because the Jira client was not restructured. Do not
+# drop the pin without checking that mcp-atlassian supports 4.x.
 add_server mcp-atlassian '{
   "type": "stdio",
   "command": "uvx",
-  "args": ["mcp-atlassian"],
+  "args": ["--with", "atlassian-python-api<4", "mcp-atlassian"],
   "env": {
     "JIRA_URL": "${JIRA_URL}",
     "JIRA_USERNAME": "${JIRA_USERNAME}",
