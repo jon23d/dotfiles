@@ -164,8 +164,10 @@ weigh.
 **You run the full gate. Implementers run only the tests and checks covering
 their own slice, for fast feedback.**
 
-Run it once per implementation round, in Phase 5, before delegating review. That
-run covers the whole tree, so it also re-verifies every slice already committed.
+Run it once, at the end — after the user has signed off (Phase 4½ — UAT), in
+Phase 5, before delegating review. UAT revisions do **not** each trigger a full
+gate; they use per-slice checks only. That single run covers the whole tree, so
+it also re-verifies every slice already committed.
 
 Do **not** run it again in Phase 8. Phase 5 gated the final code; documentation
 and memory writes don't change it. Run it again only if something after Phase 5
@@ -277,6 +279,27 @@ reviewer reads the working tree, but only commits get pushed.
 
 ---
 
+## Phase 4½ — User acceptance (UAT)
+
+After the slices are implemented and committed, hand the work back to the user
+for signoff **before** running the full gate or opening the PR:
+
+1. Report what changed and ask the user to verify (UAT).
+2. On their feedback, re-enter Phase 4 with the feedback as context — the
+   implementer revises and commits. Use **fast per-slice checks only**
+   (`pnpm --filter <app> test` / `typecheck` / `lint`, prettier), *never* the
+   full gate.
+3. Repeat until the user signs off.
+
+Only after signoff proceed to Phase 5. The full gate runs **once**, at the end,
+not per revision. Do not run the full gate or open the PR before the user has
+signed off.
+
+If a revision grows beyond a small tweak into something that changes scope, say
+so and re-scope with the user rather than absorbing it silently.
+
+---
+
 ## Phase 5 — Review loop
 
 1. Confirm the tree is clean, then run the full gate. Failure → back to the
@@ -375,9 +398,12 @@ link.
 
 ## Review feedback rounds
 
+User feedback (UAT) rounds do **not** each trigger the full gate — see Phase 4½.
+The full gate runs once, after signoff.
+
 1. `git checkout feature/{branch-slug}`
-2. Re-enter Phase 4 with the feedback as context
-3. Phases 5–8 as normal; the push updates the existing PR
+2. Re-enter Phase 4 with the feedback as context (fast per-slice checks only)
+3. After signoff: Phases 5–8 — full gate → review → push updates the existing PR
 4. Leave the branch in place
 
 ---
