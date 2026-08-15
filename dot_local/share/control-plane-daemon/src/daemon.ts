@@ -3,6 +3,7 @@ import { resolveRoutingContext } from './resolveDmChannel.js';
 import { createMattermostSocketClient } from './socketClient.js';
 import type { Logger } from './logger.js';
 import type { MattermostRestClient } from './mattermostRestClient.js';
+import type { SessionStore } from './sessionStore.js';
 import type { MattermostSocketClient, MattermostSocketClientConfig } from './socketClient.js';
 import type { StateStore } from './stateStore.js';
 import type { IncomingPost, RoutingContext } from './types.js';
@@ -15,6 +16,7 @@ export interface Daemon {
 export interface DaemonConfig {
   restClient: MattermostRestClient;
   stateStore: StateStore;
+  sessionStore: SessionStore;
   logger: Logger;
   operatorEmail: string;
   wsUrl: string;
@@ -35,6 +37,7 @@ export function createDaemon(config: DaemonConfig): Daemon {
   const {
     restClient,
     stateStore,
+    sessionStore,
     logger,
     operatorEmail,
     wsUrl,
@@ -47,7 +50,7 @@ export function createDaemon(config: DaemonConfig): Daemon {
 
   async function replyIfWarranted(post: IncomingPost): Promise<void> {
     if (!context) return; // should be unreachable once start() has resolved
-    const decision = decideReply(post, context);
+    const decision = decideReply(post, context, sessionStore);
     if (!decision.shouldReply || decision.replyMessage === undefined) return;
 
     try {

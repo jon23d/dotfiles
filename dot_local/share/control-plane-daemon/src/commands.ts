@@ -23,4 +23,14 @@ export const commandRegistry: readonly CommandDefinition[] = [
       'With no arguments, lists every available command with a one-line description.\n' +
       'With a command name (e.g. `help help`), shows that command\'s detailed usage.',
   },
+  {
+    name: 'list',
+    summary: 'List known agent sessions on this VM, running ones first.',
+    usage:
+      'list\n\n' +
+      'Shows every agent session the daemon knows about, with running sessions listed above stopped ones. ' +
+      'Each entry shows its identifier (`#<n> : <hostName>`, or its renamed ticket identifier) and which ' +
+      'harness/folder it is using.\n\n' +
+      'Replies with a clear “no sessions” message if none exist yet.',
+  },
 ];
