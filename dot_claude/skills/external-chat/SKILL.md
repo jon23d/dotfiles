@@ -7,52 +7,62 @@ description: Use when the user wants an ongoing, live conversation with you over
 
 ## Overview
 
-Lets you hold a live, two-way conversation with the operator over a Mattermost
-DM for the rest of this session: you watch their channel for new messages and
-reply as they arrive, instead of only responding inside this terminal. 
+Lets you hold a live, two-way conversation with the operator over Mattermost
+for the rest of this session: you watch a channel for new messages and reply
+as they arrive, instead of only responding inside this terminal.
 
 ## When to use
 
-- The user asks to be reachable/reached over Mattermost instead of only this
-  terminal, or to keep a conversation going while they step away.
+- The user asks to be reachable/reached over Mattermost, or wants to keep a
+  conversation going while they step away.
 - Not for something that needs to outlive this session (a service that starts
   and manages coding sessions on its own, reachable even when no interactive
-  session is running) — that's a different architecture entirely, not this
-  skill. Say so if the user's ask sounds like that instead.
+  session is running) — a different architecture, not this skill. Say so if
+  the user's ask sounds like that instead.
 
 ## Setup
 
-1. **Resolve identities and the channel** via the `mattermost` MCP server if
-   available, else the raw REST API:
-   - Your own user id — `GET /api/v4/users/me`.
-   - The operator's user id *and* username — `GET /api/v4/users/email/<email>`
-     (default to `$OPERATOR_EMAIL`, same variable/default the control-plane
-     daemon uses, before asking the user). One response, both fields — grab
-     `username` here too, step 3 needs it and it's easy to miss otherwise.
-   - The channel id — `POST /api/v4/channels/direct` with `[yourId, theirId]`.
-     Idempotent, safe to call every time. (Exactly one DM per pair of users —
-     no such thing as a second one.)
-   - Host and bot token: derive the REST host from `$MATTERMOST_MCP_URL`
-     (strip the MCP-specific path, keep scheme+host); reuse
-     `$MATTERMOST_MCP_TOKEN` as the Bearer token — valid for the plain
-     REST/WebSocket API too, not just the MCP endpoint.
-2. **Start the watcher** via the `Monitor` tool (not plain `Bash
-   run_in_background`), so new messages surface as events instead of
-   something you poll for:
-   ```
-   MM_HOST=<resolved host> MM_TOKEN=$MATTERMOST_MCP_TOKEN \
-   MM_CHANNEL=<channel id> MM_USER_ID=<operator's user id> \
-   /path/to/scripts/watch.sh
-   ```
-3. **Reply** with the `mattermost` MCP server's `dm` tool, `username` always
-   set explicitly to the operator's username from step 1 — omitted, it
-   defaults to sending to *yourself*, which silently posts to the wrong
-   identity.
+**If `$CONTROL_PLANE_DAEMON` is set** (this session was spawned by the
+control-plane daemon, not started directly): everything is already resolved —
+use it, don't re-derive or create anything.
+- Operator id: `$MATTERMOST_OPERATOR_USER_ID`.
+- Your channel: `source ./.control-plane-session-env` in your working
+  directory, then use `$MATTERMOST_SESSION_CHANNEL_ID`. This is the session's
+  own dedicated channel — never create or resolve a different one.
+
+**Otherwise** (a plain interactive session): resolve via the `mattermost` MCP
+server if available, else the raw REST API.
+- Your own user id — `GET /api/v4/users/me`.
+- The operator's user id — `GET /api/v4/users/email/<email>` (default
+  `$OPERATOR_EMAIL`, before asking).
+- A dedicated channel for *this* unit of work — `POST /api/v4/channels`
+  (`type: "P"`), then add the operator. Fresh one per task, not one reused
+  indefinitely — avoids accumulating unrelated history across unrelated work.
+
+**Both paths**: host/token — derive the REST host from `$MATTERMOST_MCP_URL`
+(strip the MCP-specific path, keep scheme+host); reuse `$MATTERMOST_MCP_TOKEN`
+as the Bearer token, valid for the plain REST/WebSocket API too.
+
+**Start the watcher** via the `Monitor` tool (not plain `Bash
+run_in_background`), so new messages surface as events instead of something
+you poll for:
+```
+MM_HOST=<resolved host> MM_TOKEN=$MATTERMOST_MCP_TOKEN \
+MM_CHANNEL=<your channel id> MM_USER_ID=<operator's user id> \
+/path/to/scripts/watch.sh
+```
+
+**Reply** via the `mattermost` MCP server's `create_post` — not `dm`.
+`create_post` also requires `channel_display_name`/`team_display_name`
+(itself needs `get_channel_info(channel_id)` first if you don't already have
+them from creating the channel); no username, though, so nothing to look up
+or get wrong there. `dm` is DM-specific and your channel is never a DM once
+it's dedicated to a unit of work.
 
 ## Known gotchas
 
-Confirmed the hard way, not theoretical — full detail and the fix for each
-lives as comments in `scripts/watch.sh`; this is just the index:
+Confirmed the hard way — full detail and the fix for each is in
+`scripts/watch.sh`'s comments; this is just the index:
 
 - Naive millisecond timestamps aren't portable across `date` builds.
 - `/bin/sh`'s `echo` can silently corrupt JSON containing `\n` — use `printf`.
@@ -63,8 +73,9 @@ lives as comments in `scripts/watch.sh`; this is just the index:
 
 ## Ending the conversation
 
-Stop the `Monitor` task when the conversation naturally wraps up or the
-session ends — this is session-scoped, not a persistent service. If the user
-wants something that survives across sessions and can be reached even when no
-interactive agent is running, that's a fundamentally different thing to
-build, not a variant of this skill.
+**Daemon-spawned**: not your call. The daemon ends the session (`stop`); the
+whole process — watcher included — ends with it. Don't stop the `Monitor`
+task yourself based on how the conversation reads.
+
+**Interactive**: stop the `Monitor` task when the conversation wraps up or
+the session ends — session-scoped, not persistent.
