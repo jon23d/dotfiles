@@ -32,6 +32,12 @@ import type { Logger } from './logger.js';
  * output satisfies this structurally, tests supply a fake. */
 export interface SpawnedProcessLike {
   readonly stderr: { on(event: 'data', listener: (chunk: unknown) => void): unknown } | null;
+  /** The OS pid of the spawned process, when known (KAN-12: used by
+   * `verifyGeneralEnvironmentAvailable` to read the child's real environment from
+   * `/proc/<pid>/environ`). Real `node:child_process.spawn()` output always has this; test
+   * doubles may supply a fake pid that has no corresponding `/proc` entry, which is exactly
+   * the "unreadable" case that check degrades gracefully on rather than treating as fatal. */
+  readonly pid?: number | undefined;
   on(event: 'exit', listener: (code: number | null) => void): unknown;
   kill(): void;
 }
@@ -43,6 +49,15 @@ export interface OpencodeHarnessConfig {
   /** How long to wait for `opencode serve` to report healthy before giving up. */
   readyTimeoutMs?: number;
   readyPollIntervalMs?: number;
+  /** Reads the real, resolved environment of the spawned child by pid (KAN-12), used by
+   * `verifyGeneralEnvironmentAvailable` to confirm the zsh-wrapper fix actually took effect for
+   * this particular spawn, not just that the wrapper command was constructed correctly. Defaults
+   * to reading `/proc/<pid>/environ` (Linux-only, consistent with this daemon's existing
+   * Linux-only deployment assumption -- see the install script's own `uname` guard). Injectable
+   * so tests can simulate both a genuinely-missing var (inject a fake resolving without it) and
+   * an unreadable environment (the real default, against a test double's fake pid, which has no
+   * corresponding `/proc` entry -- see `fakeChildProcess`'s doc comment in the test file). */
+  readChildEnviron?: (pid: number) => Promise<Record<string, string>>;
 }
 
 /**
@@ -245,6 +260,96 @@ async function verifyOrchestratorAgentAvailable(baseUrl: string, fetchImpl: type
   }
 }
 
+/**
+ * The env var `verifyGeneralEnvironmentAvailable` checks for in the spawned child's real,
+ * resolved environment (KAN-12). Chosen as the sentinel because it's literally the reported
+ * symptom and a reliable proxy for "configs.env was sourced" -- `dot_config/configs.env` today
+ * only defines `TOOLSETS` and `MATTERMOST_MCP_URL`, and the latter is the one every downstream
+ * MCP consumer (`dot_config/opencode/opencode.jsonc`'s `mattermost` MCP server,
+ * `{env:MATTERMOST_MCP_URL}`) actually depends on.
+ */
+const MATTERMOST_MCP_URL_ENV_VAR = 'MATTERMOST_MCP_URL';
+
+/**
+ * Reads a spawned process's real, resolved environment by pid (KAN-12), from
+ * `/proc/<pid>/environ` -- a NUL-separated sequence of `KEY=value` records. Linux-only, same
+ * assumption the rest of this daemon's deployment already makes (the install script's own
+ * `[ "$(uname)" = "Linux" ] || exit 0` guard). Deliberately the *default*, not the only,
+ * implementation -- `OpencodeHarnessConfig.readChildEnviron` exists precisely so this can be
+ * swapped out, and so a rejection from it (ENOENT, permission denied, non-Linux, or a test
+ * double's fake pid with no real `/proc` entry) is a normal, expected outcome for
+ * `verifyGeneralEnvironmentAvailable` to catch and degrade gracefully on, not a bug in this
+ * function.
+ */
+async function defaultReadChildEnviron(pid: number): Promise<Record<string, string>> {
+  const raw = await readFile(`/proc/${pid}/environ`, 'utf8');
+  const environ: Record<string, string> = {};
+  for (const entry of raw.split('\0')) {
+    if (entry.length === 0) continue; // trailing NUL leaves one empty entry after the split
+    const eqIndex = entry.indexOf('=');
+    if (eqIndex === -1) continue; // defensive -- every real /proc/<pid>/environ record has one
+    environ[entry.slice(0, eqIndex)] = entry.slice(eqIndex + 1);
+  }
+  return environ;
+}
+
+/**
+ * Confirms the spawned `opencode serve` child's *real, resolved* environment actually contains
+ * `MATTERMOST_MCP_URL` (KAN-12) -- i.e. that the zsh-wrapper fix genuinely worked for this
+ * particular spawn (configs.env was sourced), not merely that the wrapper command was
+ * constructed correctly. Runs once per shared server, same lifecycle as
+ * `verifyOrchestratorAgentAvailable` (after the health-check loop succeeds, before
+ * `spawnSharedServer` returns).
+ *
+ * Two distinct outcomes, deliberately different severities -- this is the load-bearing design
+ * decision here, confirmed with the ticket's own author before implementation:
+ *   - The environment was read successfully and the var is genuinely absent -> throw, and the
+ *     caller kills the child. Same "never limp along" posture as
+ *     `verifyOrchestratorAgentAvailable` for a *confirmed* misconfiguration, not a merely
+ *     suspected one.
+ *   - The environment could not be read at all (ENOENT, permission, non-Linux, or a test
+ *     double's fake pid with no real `/proc` entry) -> `logger.warn` and continue, not throw.
+ *     Unlike the HTTP-reachable `GET /agent` check, `/proc` reads are inherently
+ *     environment-fragile (containers, non-Linux dev boxes, sandboxes, tests) -- treating
+ *     "couldn't check" as fatal would make the daemon brittle in exactly the kind of edge case
+ *     this codebase elsewhere goes out of its way to tolerate gracefully (e.g.
+ *     `ensureSessionEnvFileGitignored`'s best-effort posture). Still loud (a `warn` line lands
+ *     in journald, not silence) -- just not fatal. This also means the ~30 other existing tests
+ *     that reach `spawnSharedServer` via `fakeChildProcess()`'s fake pid don't need to be
+ *     touched for this check at all: none of them have a real `/proc` entry, so the default
+ *     `readChildEnviron` hits this warn-and-continue branch, not the throw branch.
+ */
+async function verifyGeneralEnvironmentAvailable(
+  child: SpawnedProcessLike,
+  readChildEnviron: (pid: number) => Promise<Record<string, string>>,
+  logger: Logger,
+): Promise<void> {
+  if (child.pid === undefined) {
+    logger.warn(
+      "could not verify the spawned opencode serve child's real environment (KAN-12): the spawned process handle has no pid -- continuing without this check",
+    );
+    return;
+  }
+  let environ: Record<string, string>;
+  try {
+    environ = await readChildEnviron(child.pid);
+  } catch (err) {
+    logger.warn(
+      "could not read the spawned opencode serve child's real /proc/<pid>/environ (KAN-12) -- non-Linux, a permissions issue, or a test double's fake pid all produce this; continuing without this check",
+      { pid: child.pid, err },
+    );
+    return;
+  }
+  if (!(MATTERMOST_MCP_URL_ENV_VAR in environ)) {
+    throw new Error(
+      `the spawned opencode serve child's real environment is missing ${MATTERMOST_MCP_URL_ENV_VAR} -- this means ` +
+        `~/.config/configs.env was NOT actually sourced into it (check that the file exists and that ` +
+        `dot_config/zsh/rc.sh is still sourcing it correctly), which would otherwise surface later only as a ` +
+        `silent, confusing "mattermost" MCP connection failure inside a spawned session instead of this explicit one`,
+    );
+  }
+}
+
 function defaultSpawn(command: string, args: string[], options: { cwd: string; env: Record<string, string> }): SpawnedProcessLike {
   return nodeSpawn(command, args, {
     cwd: options.cwd,
@@ -381,6 +486,7 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     fetchImpl = fetch,
     readyTimeoutMs = 10_000,
     readyPollIntervalMs = 150,
+    readChildEnviron = defaultReadChildEnviron,
   } = config;
 
   // Caches the in-flight *promise*, not just its resolved value (review
@@ -404,7 +510,31 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
   async function spawnSharedServer(logger: Logger, operatorUserId: string): Promise<SharedServer> {
     const port = await pickPort();
     const baseUrl = `http://127.0.0.1:${port}`;
-    const child = spawnProcess('opencode', ['serve', '--port', String(port), '--hostname', '127.0.0.1'], {
+    // KAN-12: spawn through an interactive zsh shell rather than invoking the `opencode`
+    // binary directly. Systemd user services never source ~/.zshrc / dot_config/zsh/rc.sh /
+    // dot_config/configs.env, so anything that normally comes from an interactive shell
+    // (MATTERMOST_MCP_URL today, anything else configs.env grows tomorrow) was invisible to
+    // every session this harness spawned -- silently breaking opencode.jsonc's `mattermost`
+    // MCP server (`{env:MATTERMOST_MCP_URL}`). `zsh -ic 'exec opencode serve ...'` makes the
+    // child inherit whatever an ordinary interactive shell picks up, by construction, instead
+    // of the daemon hand-forwarding individual env vars one at a time (the exact failure mode
+    // CONTROL_PLANE_DAEMON_ENV_VAR/MATTERMOST_OPERATOR_USER_ID_ENV_VAR below are a *deliberate*
+    // exception to, since those two are genuinely daemon-only facts no rc file could ever
+    // produce). Live-confirmed on this host: `env CONTROL_PLANE_DAEMON=1
+    // MATTERMOST_OPERATOR_USER_ID=<id> zsh -ic 'exec env' </dev/null` shows both vars intact
+    // alongside MATTERMOST_MCP_URL and a correctly-extended PATH -- rc.sh/aliases.sh/prompt.zsh
+    // contain no `unset`/`env -i`/`export -n` that could clobber the two injected vars, and
+    // `exec`ing into zsh's rc chain sets the env before spawnProcess's own `env` option below
+    // is even applied, so ordering is safe. This also incidentally fixes a second, related bug:
+    // the daemon's own systemd-user-service PATH doesn't include `/home/jon23d/.opencode/bin`
+    // (confirmed via `systemctl --user show-environment`), so `opencode` was very likely never
+    // resolvable via the daemon's own PATH either -- resolving it inside the exec'd zsh (which
+    // does get the right PATH via rc.sh) fixes both problems with one change. The port/hostname
+    // are trusted/non-adversarial (pickPort() returns an OS-assigned number; hostname is a
+    // fixed literal), so there's no live injection vector, but `shellSingleQuote` is reused here
+    // anyway for defensive-by-construction consistency with the rest of this file's posture.
+    const execString = `exec opencode serve --port ${shellSingleQuote(String(port))} --hostname ${shellSingleQuote('127.0.0.1')}`;
+    const child = spawnProcess('zsh', ['-ic', execString], {
       cwd: process.cwd(),
       env: { [CONTROL_PLANE_DAEMON_ENV_VAR]: '1', [MATTERMOST_OPERATOR_USER_ID_ENV_VAR]: operatorUserId },
     });
@@ -462,6 +592,16 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
       throw cause;
     }
     logger.info(`confirmed opencode has the "${ORCHESTRATOR_AGENT_NAME}" agent available`, { port });
+
+    try {
+      await verifyGeneralEnvironmentAvailable(child, readChildEnviron, logger);
+    } catch (cause) {
+      // Same posture as the orchestrator-agent check just above -- a confirmed environment-parity
+      // failure means this harness will never use this child, so it must be killed here or it
+      // leaks as an orphaned process holding `port`.
+      child.kill();
+      throw cause;
+    }
 
     return server;
   }

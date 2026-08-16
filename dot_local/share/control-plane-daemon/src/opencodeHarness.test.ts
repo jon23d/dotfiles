@@ -28,12 +28,19 @@ function silentLogger(): Logger {
 
 /** A minimal fake child process -- mirrors socketClient.test.ts's WebSocketLike fakes: an
  * EventEmitter standing in for the real node:child_process handle, with test-only helpers
- * to simulate the events opencodeHarness.ts actually listens for. */
+ * to simulate the events opencodeHarness.ts actually listens for.
+ *
+ * `pid` is a fixed fake value (KAN-12) -- it has no corresponding real `/proc/<pid>/environ`
+ * entry, which is exactly the "unreadable" case `verifyGeneralEnvironmentAvailable`'s default
+ * real `readChildEnviron` degrades gracefully on (warn, not throw). That's what lets the ~30
+ * other tests reaching `spawnSharedServer` through this one factory pass unmodified: none of
+ * them inject a fake `readChildEnviron`, so they all hit the unreadable branch and warn. */
 function fakeChildProcess(): SpawnedProcessLike & { emitExit(code: number | null): void; emitStderr(chunk: string): void } {
   const emitter = new EventEmitter();
   const stderrEmitter = new EventEmitter();
   const proc = {
     stderr: stderrEmitter,
+    pid: 12345,
     on: (event: 'exit', listener: (code: number | null) => void) => {
       emitter.on(event, listener);
       return proc;
@@ -141,9 +148,16 @@ describe('createOpencodeHarness', () => {
     const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
 
     expect(handle).toBeDefined();
+    // KAN-12: spawned through an interactive zsh shell (`zsh -ic 'exec opencode serve ...'`),
+    // not the `opencode` binary directly, so the child inherits whatever an ordinary
+    // interactive shell picks up (configs.env, sourced only via .zshrc) instead of the daemon
+    // hand-forwarding individual env vars one at a time.
     expect(spawnProcess).toHaveBeenCalledWith(
-      'opencode',
-      expect.arrayContaining(['serve', '--port', String(PORT), '--hostname', '127.0.0.1']),
+      'zsh',
+      expect.arrayContaining([
+        '-ic',
+        expect.stringMatching(new RegExp(`exec opencode serve --port '?${PORT}'? --hostname '?127\\.0\\.0\\.1'?`)),
+      ]),
       expect.objectContaining({}),
     );
     expect(createdWithDirectory).toBe(dir);
@@ -235,6 +249,64 @@ describe('createOpencodeHarness', () => {
     });
   });
 
+  describe('general environment availability check (KAN-12)', () => {
+    /**
+     * Runs once per shared-server spawn, right after the orchestrator-agent check, and reads
+     * the spawned child's *real* resolved environment (via the injectable `readChildEnviron`)
+     * to confirm the interactive-zsh-shell fix actually worked -- i.e. that `configs.env` was
+     * genuinely sourced into the child, not just that the zsh wrapper command was constructed
+     * correctly (that part is covered by the top-level "spawns ... zsh ..." test above).
+     * `MATTERMOST_MCP_URL` is the sentinel: it's the literal reported symptom, and `configs.env`
+     * today only defines `TOOLSETS` and `MATTERMOST_MCP_URL`, with the latter being the one
+     * every downstream MCP consumer actually depends on.
+     */
+    it('throws naming configs.env and kills the child when the spawned child\'s real environment is confirmably missing MATTERMOST_MCP_URL', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const createSessionHandler = vi.fn(() => HttpResponse.json({ id: 'ses_abc123' }));
+      server.use(healthyHandler(), agentAvailableHandler(), http.post(`${BASE_URL}/session`, createSessionHandler));
+      const readChildEnviron = vi.fn().mockResolvedValue({ PATH: '/usr/bin' }); // no MATTERMOST_MCP_URL
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT, readChildEnviron });
+
+      await expect(harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() })).rejects.toThrow(
+        /MATTERMOST_MCP_URL.*configs\.env|configs\.env.*MATTERMOST_MCP_URL/is,
+      );
+      expect(createSessionHandler).not.toHaveBeenCalled();
+      // Same "never limp along" posture as verifyOrchestratorAgentAvailable above -- a
+      // confirmed, not merely suspected, misconfiguration kills the shared child rather than
+      // leaving an orphaned process holding its port (nothing else keeps a reference to it once
+      // ensureSharedServer's catch clears sharedPromise).
+      expect(child.kill).toHaveBeenCalled();
+    });
+
+    it('succeeds and creates the session when the spawned child\'s real environment does contain MATTERMOST_MCP_URL', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      server.use(healthyHandler(), agentAvailableHandler(), http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })));
+      const readChildEnviron = vi.fn().mockResolvedValue({ PATH: '/usr/bin', MATTERMOST_MCP_URL: 'https://mattermost.example/plugins/mcp' });
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT, readChildEnviron });
+
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+
+      expect(handle).toBeDefined();
+      expect(child.kill).not.toHaveBeenCalled();
+    });
+
+    it('logs a warn (not a throw) and still succeeds when the child\'s environment cannot be read at all -- e.g. a test double\'s fake pid with no real /proc entry', async () => {
+      const child = fakeChildProcess(); // pid 12345, no corresponding real /proc/12345/environ
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      server.use(healthyHandler(), agentAvailableHandler(), http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })));
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT }); // default real readChildEnviron
+      const logger = silentLogger();
+
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger });
+
+      expect(handle).toBeDefined();
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/environ/i), expect.objectContaining({ pid: 12345 }));
+    });
+  });
+
   it('spawns `opencode serve` with a distinguishing env var so an in-session agent can tell it is running under the daemon (kan7-2 F4)', async () => {
     const child = fakeChildProcess();
     const spawnProcess = vi.fn().mockReturnValue(child);
@@ -248,7 +320,7 @@ describe('createOpencodeHarness', () => {
     await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
 
     expect(spawnProcess).toHaveBeenCalledWith(
-      'opencode',
+      'zsh',
       expect.any(Array),
       expect.objectContaining({ env: expect.objectContaining({ [CONTROL_PLANE_DAEMON_ENV_VAR]: '1' }) }),
     );
@@ -268,7 +340,7 @@ describe('createOpencodeHarness', () => {
       await harness.start({ folder: dir, operatorUserId: 'operator-42', logger: silentLogger() });
 
       expect(spawnProcess).toHaveBeenCalledWith(
-        'opencode',
+        'zsh',
         expect.any(Array),
         expect.objectContaining({ env: expect.objectContaining({ [MATTERMOST_OPERATOR_USER_ID_ENV_VAR]: 'operator-42' }) }),
       );
@@ -294,7 +366,7 @@ describe('createOpencodeHarness', () => {
 
       expect(spawnProcess).toHaveBeenCalledTimes(1);
       expect(spawnProcess).toHaveBeenCalledWith(
-        'opencode',
+        'zsh',
         expect.any(Array),
         expect.objectContaining({ env: expect.objectContaining({ [MATTERMOST_OPERATOR_USER_ID_ENV_VAR]: 'operator-42' }) }),
       );
