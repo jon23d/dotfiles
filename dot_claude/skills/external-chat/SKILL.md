@@ -13,12 +13,11 @@ as they arrive, instead of only responding inside this terminal.
 
 ## When to use
 
-- The user asks to be reachable/reached over Mattermost, or wants to keep a
-  conversation going while they step away.
-- Not for something that needs to outlive this session (a service that starts
-  and manages coding sessions on its own, reachable even when no interactive
-  session is running) — a different architecture, not this skill. Say so if
-  the user's ask sounds like that instead.
+- The user wants to be reachable over Mattermost, or wants to keep talking
+  while they step away.
+- Not for something that outlives this session (a service managing coding
+  sessions on its own, reachable with none running) — different
+  architecture, not this skill. Say so if that's what's being asked for.
 
 ## Setup
 
@@ -41,7 +40,9 @@ server if available, else the raw REST API.
 
 **Both paths**: host/token — derive the REST host from `$MATTERMOST_MCP_URL`
 (strip the MCP-specific path, keep scheme+host); reuse `$MATTERMOST_MCP_TOKEN`
-as the Bearer token, valid for the plain REST/WebSocket API too.
+as the Bearer token. **Known gap, daemon-spawned only**: `$MATTERMOST_MCP_URL`
+isn't currently set in that environment (tracked separately) — this and the
+`mattermost` MCP server itself won't work there until that's fixed.
 
 **Start the watcher** via the `Monitor` tool (not plain `Bash
 run_in_background`), so new messages surface as events instead of something
@@ -52,30 +53,29 @@ MM_CHANNEL=<your channel id> MM_USER_ID=<operator's user id> \
 /path/to/scripts/watch.sh
 ```
 
-**Reply** via the `mattermost` MCP server's `create_post` — not `dm`.
-`create_post` also requires `channel_display_name`/`team_display_name`
-(itself needs `get_channel_info(channel_id)` first if you don't already have
-them from creating the channel); no username, though, so nothing to look up
-or get wrong there. `dm` is DM-specific and your channel is never a DM once
-it's dedicated to a unit of work.
+**Reply** via `create_post`, not `dm` — your channel is never a DM once it's
+dedicated to a unit of work. Also needs `channel_display_name`/
+`team_display_name` (via `get_channel_info` if not already known).
 
 ## Known gotchas
 
-Confirmed the hard way — full detail and the fix for each is in
-`scripts/watch.sh`'s comments; this is just the index:
+Confirmed the hard way — detail and fixes are in `scripts/watch.sh`'s
+comments; this is just the index:
 
 - Naive millisecond timestamps aren't portable across `date` builds.
 - `/bin/sh`'s `echo` can silently corrupt JSON containing `\n` — use `printf`.
-- A watcher that swallows connection/HTTP errors is indistinguishable from
-  one that's working — surface failures as visible lines, always.
+- Swallowing connection/HTTP errors is indistinguishable from working —
+  always surface failures as visible lines.
 - Mattermost's `since` filter is exclusive; naive dedupe drops
   same-millisecond sibling messages.
 
 ## Ending the conversation
 
-**Daemon-spawned**: not your call. The daemon ends the session (`stop`); the
-whole process — watcher included — ends with it. Don't stop the `Monitor`
-task yourself based on how the conversation reads.
+**Daemon-spawned**: not your call — the daemon decides via `stop`, not you.
+Don't stop the `Monitor` task yourself based on how the conversation reads.
+Unverified whether `stop` also reaps your watcher process; if it doesn't,
+your watcher may keep running after `stop` — that's a known gap, not
+something to work around by self-terminating.
 
 **Interactive**: stop the `Monitor` task when the conversation wraps up or
 the session ends — session-scoped, not persistent.
