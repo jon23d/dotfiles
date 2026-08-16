@@ -189,42 +189,59 @@ export async function runStart(args: string[], deps: StartDeps): Promise<string>
   // *current* identifier (rather than a second variable tracked in this
   // closure), so a failure message after a prior successful rename always
   // reports the name the channel actually has right now.
-  handle.onRename((newTitle) => {
+  async function performRename(newTitle: string): Promise<void> {
     const newIdentifier = `${newTitle} : ${deps.hostname}`;
     const newChannelSlug = slugify(`session-${sessionNumber}-${newTitle}`);
-    deps.restClient
-      .renameChannel(channelId, newChannelSlug, newIdentifier)
-      .then(() => {
-        deps.sessionStore.renameSession(session.id, newIdentifier);
-        deps.logger.info('renamed session chat at the agent\'s request', {
-          sessionId: session.id,
-          channelId,
-          newIdentifier,
-        });
-      })
-      .catch((err: unknown) => {
-        // AC3: a failed rename (permissions, name collision, ...) must be
-        // surfaced, not left as a silently-stale name -- and must not be
-        // retried automatically forever, so this is a one-shot attempt per
-        // signal. If the agent still wants the new name, its own retry of
-        // the underlying signal (e.g. PATCHing its opencode session title
-        // again) naturally produces another signal here.
-        deps.logger.error('failed to rename session chat at the agent\'s request', {
-          err,
-          sessionId: session.id,
-          channelId,
-          attemptedIdentifier: newIdentifier,
-        });
-        const stillNamed = deps.sessionStore.findByChannelId(channelId)?.identifier ?? identifier;
-        deps.restClient
-          .createPost(
-            channelId,
-            `Could not rename this chat to \`${newIdentifier}\`: ${errMessage(err)}. It is still named \`${stillNamed}\`.`,
-          )
-          .catch((postErr: unknown) => {
-            deps.logger.error('failed to post rename-failure notice', { err: postErr, channelId });
-          });
+    try {
+      await deps.restClient.renameChannel(channelId, newChannelSlug, newIdentifier);
+      deps.sessionStore.renameSession(session.id, newIdentifier);
+      deps.logger.info('renamed session chat at the agent\'s request', {
+        sessionId: session.id,
+        channelId,
+        newIdentifier,
       });
+    } catch (err) {
+      // AC3: a failed rename (permissions, name collision, ...) must be
+      // surfaced, not left as a silently-stale name -- and must not be
+      // retried automatically forever, so this is a one-shot attempt per
+      // signal. If the agent still wants the new name, its own retry of
+      // the underlying signal (e.g. PATCHing its opencode session title
+      // again) naturally produces another signal here.
+      deps.logger.error('failed to rename session chat at the agent\'s request', {
+        err,
+        sessionId: session.id,
+        channelId,
+        attemptedIdentifier: newIdentifier,
+      });
+      const stillNamed = deps.sessionStore.findByChannelId(channelId)?.identifier ?? identifier;
+      // Both interpolated values ultimately derive from the agent-set
+      // `newTitle` (review kan7-1 F1, same class of issue as kan3-1 F1 /
+      // kan4-1 F1) -- strip backticks so it can't break out of the
+      // backtick-quoted span it's placed in.
+      try {
+        await deps.restClient.createPost(
+          channelId,
+          `Could not rename this chat to \`${stripBackticks(newIdentifier)}\`: ${errMessage(err)}. It is still named \`${stripBackticks(stillNamed)}\`.`,
+        );
+      } catch (postErr) {
+        deps.logger.error('failed to post rename-failure notice', { err: postErr, channelId });
+      }
+    }
+  }
+
+  // Serializes rename attempts (review kan7-1 F2): without this, two
+  // `onRename` fires in quick succession (AC2's own scenario -- opencode's
+  // SSE handler invokes the callback synchronously per event, no await in
+  // between) would each kick off an independent, concurrent `renameChannel`
+  // request whose completion order isn't guaranteed to match firing order,
+  // letting `sessionStore.renameSession` end up called with the OLDER
+  // identifier after the newer one. Chaining each new attempt onto the
+  // promise of the prior one means the second request is never even
+  // *issued* until the first has fully settled (success or failure), so
+  // store updates always happen in true chronological (fire) order.
+  let renameChain: Promise<void> = Promise.resolve();
+  handle.onRename((newTitle) => {
+    renameChain = renameChain.then(() => performRename(newTitle));
   });
 
   handle.onExit(({ code }) => {
