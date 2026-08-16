@@ -11,7 +11,7 @@ Write the test first. Run it. Watch it fail. Then write the code.
 
 **Step 1 — Write the test file only.** The implementation file must not exist. Write tests that describe the required behavior from the outside.
 
-**Step 2 — Run the tests and show the failure output.** Do not proceed until you have run the test command and shown the failure.
+**Step 2 — Run the tests you wrote and show the failure output.** Do not proceed until you have run the test command and shown the failure.
 
 **Step 3 — Write the minimum implementation to make the tests pass.**
 
@@ -21,11 +21,25 @@ Write the test first. Run it. Watch it fail. Then write the code.
 
 Writing tests and implementation in the same step is not tdd.
 
+## The cycle unit is one behaviour
+
+Complete Steps 1–4 for one behaviour before writing the test for the next. Never accumulate tests for several behaviours and satisfy them in one pass.
+
+Batching breaks two of the steps: with many tests failing at once, Step 3's "minimum implementation" becomes the whole feature, and Step 2's failure output no longer identifies which behaviour is missing.
+
+When a task arrives as a list — a multi-part feature, several review findings, a set of acceptance criteria — work the items one at a time.
+
+When reporting back, state how many red→green cycles you ran and which behaviour each covered.
+
 ## Running tests
 
-Run every test that CI will run — locally, before reporting back. No test suite is "CI only." This includes unit tests (`npx vitest run`), integration tests, type checking, and linting (`pnpm lint` or `npm run lint`). Zero errors required across all of them.
+**During cycles:** run the single test file or a filtered subset (`npx vitest run path/to/file.test.ts`, or `-t` on the test name).
 
-Whether a review follows, and who runs it, is the orchestrator's call, not this skill's — see `code-review` and `delegation`. This skill's scope ends at everything running clean.
+**Before reporting back:** run the tests and checks covering what you changed — the affected package only. Typically `pnpm --filter <package> test`, `typecheck`, `lint`, plus prettier on the files you touched. Zero errors required.
+
+**Never run the full test suite.** The full gate is the orchestrator's job.
+
+This skill's scope ends at everything you changed running clean.
 
 ---
 
@@ -317,6 +331,7 @@ This skill governs the red-green-refactor mechanics within a single test cycle. 
 
 - About to write an implementation file without a failing test
 - Wrote both files without running the test in between
+- Wrote tests for several behaviours before running any of them red
 - Showing passing tests without first showing failing ones
 - Created new classes/functions in a refactor but wrote zero new tests
 - About to mock Prisma instead of using testcontainers
@@ -327,6 +342,7 @@ This skill governs the red-green-refactor mechanics within a single test cycle. 
 
 - **"It's too simple"** → Simple things break. Write it.
 - **"I'll add tests after"** → Tests after prove what code does, not what it should do.
+- **"I'll write all the tests up front, then make them pass"** → Then "minimum implementation" is the whole feature, and the red run identifies nothing.
 - **"We're in a hurry"** → Code without tests creates more delays.
 - **"Setting up a container is complex"** → A Prisma mock tests nothing real.
 - **"I'll just mock fetch, it's simpler"** → A fetch mock tests your mock, not your HTTP integration. MSW intercepts real requests.
