@@ -1,6 +1,8 @@
 import { spawn as nodeSpawn } from 'node:child_process';
-import { stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { join } from 'node:path';
 import { z } from 'zod';
 import type { HarnessAdapter, HarnessSessionHandle } from './harness.js';
 import type { Logger } from './logger.js';
@@ -55,6 +57,111 @@ export interface OpencodeHarnessConfig {
  * variant to track.
  */
 export const CONTROL_PLANE_DAEMON_ENV_VAR = 'CONTROL_PLANE_DAEMON';
+
+/**
+ * Who the operator is (KAN-10), delivered the exact same way as
+ * `CONTROL_PLANE_DAEMON_ENV_VAR` above and for the same reason: the operator
+ * is genuinely process-wide (one operator per VM, per this whole epic's
+ * design -- see startCommand.ts's `StartDeps.operatorUserId`, resolved once
+ * at daemon startup by resolveDmChannel.ts), so it fits the shared-process
+ * env var pattern with no per-session complication. Set once, at spawn --
+ * every session on this shared server sees the same operator by
+ * construction, so there is no per-session variant to track (identical
+ * reasoning to `CONTROL_PLANE_DAEMON_ENV_VAR`'s own doc comment).
+ */
+export const MATTERMOST_OPERATOR_USER_ID_ENV_VAR = 'MATTERMOST_OPERATOR_USER_ID';
+
+/**
+ * The key an in-session agent finds its own session's Mattermost channel id
+ * under (KAN-10), once it sources `SESSION_ENV_FILE_NAME` from its own
+ * working directory. NOT a process env var like the two constants above --
+ * deliberately can't be, since a session's channel id is inherently
+ * per-session while every session on this harness shares one `opencode
+ * serve` process (KAN-5). See `provisionChannelId`'s doc comment on
+ * `HarnessSessionHandle` (harness.ts) for the full investigation: opencode's
+ * `POST /session` and `POST /session/:id/prompt_async` request schemas (live
+ * -checked via a real server's `GET /doc`, opencode 1.18.18) have no `env`
+ * field anywhere, and the `Session` response schema has no `env` property
+ * either -- only an arbitrary `metadata` bag that's retrievable via the API,
+ * not injected into the bash tool's subprocess env. A live round-trip
+ * against that same server confirmed the bash tool's cwd is exactly the
+ * session's own `directory`, and that a file placed there beforehand is
+ * readable from a relative path -- so this uses that instead, needing no
+ * opencode cooperation at all.
+ */
+export const MATTERMOST_SESSION_CHANNEL_ID_ENV_VAR = 'MATTERMOST_SESSION_CHANNEL_ID';
+
+/**
+ * Filename `provisionChannelId` writes into a session's own folder (KAN-10).
+ * Hidden (dot-prefixed) so it doesn't clutter a directory listing of the
+ * project the agent is actually working in. Shell-sourceable
+ * (`export KEY='value'` lines) rather than a bare value or JSON, since each
+ * bash-tool invocation is its own fresh subprocess (proven by
+ * `CONTROL_PLANE_DAEMON_ENV_VAR` needing to live on the *parent* process's
+ * env in the first place, rather than being exportable once and persisting
+ * across calls) -- `source`-ing this file is a one-line, well-known,
+ * zero-guesswork way for the agent to load these values into whichever
+ * shell invocation actually needs them.
+ */
+export const SESSION_ENV_FILE_NAME = '.control-plane-session-env';
+
+/**
+ * Ignore pattern `ensureSessionEnvFileGitignored` writes into a session's
+ * folder's own `.gitignore` (review kan10-1 F3). Covers `SESSION_ENV_FILE_NAME`
+ * itself and its transient `.tmp-<pid>-<uuid>` write-siblings (see the atomic
+ * write in `provisionChannelId` below) with one glob, rather than needing a
+ * second entry for the tmp path pattern.
+ */
+const SESSION_ENV_GITIGNORE_ENTRY = `${SESSION_ENV_FILE_NAME}*`;
+
+/**
+ * Single-quotes `value` for safe embedding in a POSIX shell `export`
+ * statement, escaping any embedded single quote the standard way
+ * (`'...'\''...'`) -- the same defensive posture as startCommand.ts's
+ * `stripBackticks` for backtick-quoted spans (kan7-1 F1 and friends): a
+ * channel id is Mattermost-controlled, not something this daemon should
+ * ever trust blindly when writing it into a file another process will
+ * `source`.
+ */
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, String.raw`'\''`)}'`;
+}
+
+/**
+ * Best-effort: adds `SESSION_ENV_GITIGNORE_ENTRY` to the session's own
+ * folder's own `.gitignore` (review kan10-1 F3). `folder` is the operator's
+ * actual project directory (the `folder` argument to `start <harness>
+ * <folder>`), not a daemon-owned location -- nothing otherwise stops an
+ * ordinary `git add -A`/`git commit -a` run by the agent or operator working
+ * in that folder from committing the session's Mattermost channel id into
+ * the project's own git history. Idempotent (checks for an existing
+ * identical entry first) and never throws -- failure here is logged and
+ * swallowed rather than propagated, since this is a defense-in-depth nicety
+ * around `provisionChannelId`'s actual job, not the loud-on-failure delivery
+ * of the channel id itself (that's the `writeFile`/`rename` below); a folder
+ * this can't be written to for some unrelated reason (e.g. no `.gitignore`
+ * write permission) shouldn't block the session from working.
+ */
+async function ensureSessionEnvFileGitignored(folder: string, logger: Logger): Promise<void> {
+  const gitignorePath = join(folder, '.gitignore');
+  try {
+    let existing = '';
+    try {
+      existing = await readFile(gitignorePath, 'utf8');
+    } catch (err) {
+      if (!(err instanceof Error && 'code' in err && err.code === 'ENOENT')) throw err;
+    }
+    if (existing.split('\n').some((line) => line.trim() === SESSION_ENV_GITIGNORE_ENTRY)) return; // already present
+    const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+    const addition = `${separator}# control-plane-daemon (KAN-10): this session's own Mattermost channel id -- never commit it\n${SESSION_ENV_GITIGNORE_ENTRY}\n`;
+    await writeFile(gitignorePath, existing + addition, 'utf8');
+  } catch (err) {
+    logger.error("failed to add the session-env marker file to this folder's .gitignore (best-effort, ignored)", {
+      err,
+      folder,
+    });
+  }
+}
 
 /**
  * The identifier opencode's `agent` fields need to select the orchestrator
@@ -294,12 +401,12 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     for (const cb of server.exitCallbacks.splice(0)) cb({ code });
   }
 
-  async function spawnSharedServer(logger: Logger): Promise<SharedServer> {
+  async function spawnSharedServer(logger: Logger, operatorUserId: string): Promise<SharedServer> {
     const port = await pickPort();
     const baseUrl = `http://127.0.0.1:${port}`;
     const child = spawnProcess('opencode', ['serve', '--port', String(port), '--hostname', '127.0.0.1'], {
       cwd: process.cwd(),
-      env: { [CONTROL_PLANE_DAEMON_ENV_VAR]: '1' },
+      env: { [CONTROL_PLANE_DAEMON_ENV_VAR]: '1', [MATTERMOST_OPERATOR_USER_ID_ENV_VAR]: operatorUserId },
     });
 
     const server: SharedServer = {
@@ -359,9 +466,9 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     return server;
   }
 
-  async function ensureSharedServer(logger: Logger): Promise<SharedServer> {
+  async function ensureSharedServer(logger: Logger, operatorUserId: string): Promise<SharedServer> {
     if (!sharedPromise) {
-      sharedPromise = spawnSharedServer(logger);
+      sharedPromise = spawnSharedServer(logger, operatorUserId);
     }
     const attempted = sharedPromise;
 
@@ -383,9 +490,9 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
       // the staleness converges on the same fresh attempt instead of
       // triggering its own.
       if (sharedPromise === attempted) {
-        sharedPromise = spawnSharedServer(logger);
+        sharedPromise = spawnSharedServer(logger, operatorUserId);
       }
-      return ensureSharedServer(logger);
+      return ensureSharedServer(logger, operatorUserId);
     }
 
     return server;
@@ -477,9 +584,9 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
   return {
     name: 'opencode',
 
-    async start({ folder, logger }) {
+    async start({ folder, operatorUserId, logger }) {
       await validateFolder(folder);
-      const server = await ensureSharedServer(logger);
+      const server = await ensureSharedServer(logger, operatorUserId);
       const { id: sessionId, title: initialTitle } = await createSession(server, folder);
       server.renameState.set(sessionId, { lastTitle: initialTitle, callbacks: [] });
 
@@ -526,6 +633,39 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
         onRename(callback) {
           server.renameState.get(sessionId)?.callbacks.push(callback);
           ensureEventStream(server, logger);
+        },
+
+        async provisionChannelId(channelId) {
+          // Best-effort, logged-not-thrown (review kan10-1 F3) -- runs before the
+          // real write below so the ignore rule is in place before the file it
+          // protects exists, but its own failure must never block the loud-on-
+          // failure delivery that follows.
+          await ensureSessionEnvFileGitignored(folder, logger);
+
+          const filePath = join(folder, SESSION_ENV_FILE_NAME);
+          const contents =
+            `# Auto-generated by control-plane-daemon (KAN-10) -- \`source\` this file to load\n` +
+            `# this session's own values into your shell.\n` +
+            `export ${MATTERMOST_SESSION_CHANNEL_ID_ENV_VAR}=${shellSingleQuote(channelId)}\n`;
+          // Same atomic tmp-write-then-rename pattern as sessionNumberStore.ts's
+          // `allocateOnce` and stateStore.ts's `writeLastSeen` (review kan10-1 F1):
+          // nothing ever reads this file back to notice a torn write the way those
+          // two do on their own next read, so a crash mid-`writeFile` here would
+          // otherwise leave a silently-corrupt file (e.g. a dangling `export ...='chan-ab`
+          // with no closing quote) that nothing detects until the (separately-tracked)
+          // external-chat skill eventually tries to `source` it. `rename()` on the same
+          // filesystem is atomic, so this file is always either fully absent/stale or
+          // fully correct, never half-written.
+          const tmpPath = join(folder, `${SESSION_ENV_FILE_NAME}.tmp-${process.pid}-${randomUUID()}`);
+          try {
+            await writeFile(tmpPath, contents, 'utf8');
+            await rename(tmpPath, filePath);
+          } catch (cause) {
+            throw new Error(
+              `failed to write this session's channel id into ${filePath}: ${cause instanceof Error ? cause.message : String(cause)}`,
+              { cause },
+            );
+          }
         },
       };
 

@@ -15,8 +15,16 @@ export interface HarnessAdapter {
    * harness API unreachable, ...) rather than ever resolving with a handle
    * that isn't actually usable -- startCommand.ts relies on rejection being
    * the only failure signal, per the epic's "no silent failure" principle.
+   *
+   * `operatorUserId` (KAN-10) is who the operator is, resolved once at
+   * daemon startup (resolveDmChannel.ts) -- genuinely process-wide (one
+   * operator per VM, per this whole epic's design), unlike the channel id
+   * below, which is inherently per-session. A concrete harness is free to
+   * deliver it however suits its own mechanism (e.g. opencode's adapter
+   * sets it as a real env var on its one shared server process, the same
+   * place `CONTROL_PLANE_DAEMON` lives -- see opencodeHarness.ts).
    */
-  start(options: { folder: string; logger: Logger }): Promise<HarnessSessionHandle>;
+  start(options: { folder: string; operatorUserId: string; logger: Logger }): Promise<HarnessSessionHandle>;
 }
 
 /** A live handle to one running harness session. */
@@ -48,4 +56,27 @@ export interface HarnessSessionHandle {
    * harness-agnostic seam the rest of the daemon reacts to.
    */
   onRename(callback: (identifier: string) => void): void;
+  /**
+   * Delivers this session's own Mattermost channel id (KAN-10) into wherever
+   * this harness's in-session agent can reliably discover it -- called
+   * exactly once, after `start()` already returned this handle, because
+   * startCommand.ts doesn't know the channel id until *after* it creates the
+   * Mattermost channel, which itself only happens after the harness session
+   * already exists (there's nothing to add a channel member to, or name
+   * after, before the harness session is running). The caller
+   * (startCommand.ts) always awaits and checks this before registering the
+   * session for message forwarding, so no prompt can ever reach the session
+   * before this has resolved.
+   *
+   * Unlike `operatorUserId` on `start()`, this cannot be a process-wide
+   * value: opencode's adapter runs every session through one shared server
+   * process (KAN-5), so a channel id set as that process's env would leak
+   * across every other session sharing it. Must reject loudly on failure
+   * (e.g. couldn't write to the session's own folder) -- per the epic's "no
+   * silent failure" principle, callers treat a rejection here exactly like
+   * any other setup-step failure (stop the harness, don't leave a
+   * half-wired session running) rather than letting the session start
+   * without ever confirming this value actually landed.
+   */
+  provisionChannelId(channelId: string): Promise<void>;
 }
