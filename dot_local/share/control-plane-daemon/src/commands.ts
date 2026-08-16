@@ -37,7 +37,7 @@ export const commandRegistry: readonly CommandDefinition[] = [
     name: 'start',
     summary: 'Start a new agent session in a harness and folder, opening its own dedicated chat.',
     usage:
-      'start <harness> <folder>\n\n' +
+      'start <harness> <folder> [--force]\n\n' +
       'Spins up a new agent session using <harness> (currently only `opencode` is implemented; ' +
       '`claude-code` is a recognized but not-yet-supported choice) rooted at <folder>, and opens a new ' +
       'private Mattermost channel dedicated to that session, named `#<n> : <hostName>` where `<n>` ' +
@@ -46,7 +46,10 @@ export const commandRegistry: readonly CommandDefinition[] = [
       'guessing.\n\n' +
       'Example: `start opencode /home/jon/my-project`\n\n' +
       'If the harness or folder is invalid/inaccessible, or the session channel can\'t be created, replies ' +
-      'with a clear error and creates nothing.',
+      'with a clear error and creates nothing.\n\n' +
+      'By default, refuses (naming the session already running) if a session is already running on this VM ' +
+      '-- only one running session at a time is allowed by default (KAN-8). Add `--force` (anywhere in the ' +
+      'arguments) to start anyway despite an already-running session.',
   },
   {
     name: 'stop',
