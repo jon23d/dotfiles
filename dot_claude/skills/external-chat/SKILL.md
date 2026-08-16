@@ -1,7 +1,7 @@
 ---
 name: external-chat
-description: Use when the user wants an ongoing, live conversation with you over Mattermost instead of only in this terminal session — e.g. "keep talking to me in chat", "watch for my replies while I'm away", "let's continue over Mattermost". Not for one-off completion/blocked notifications (use telegram-notification for that) and not for a persistent, always-on service outliving this session (see the KAN-1-style control-plane-daemon pattern for that).
----
+description: Use when the user wants an ongoing, live conversation with you over Mattermost instead of only in this terminal session — e.g. "keep talking to me in chat", "watch for my replies while I'm away", "let's continue over Mattermost".
+--
 
 # External Chat
 
@@ -9,19 +9,12 @@ description: Use when the user wants an ongoing, live conversation with you over
 
 Lets you hold a live, two-way conversation with the operator over a Mattermost
 DM for the rest of this session: you watch their channel for new messages and
-reply as they arrive, instead of only responding inside this terminal. This
-formalizes a pattern that was previously hand-rolled from scratch and had to
-have three separate bugs found and fixed the hard way before this skill
-existed — see `scripts/watch.sh`'s comments for the story behind each one.
-Don't rebuild this from first principles; the naive version is the version
-that was already tried and broken.
+reply as they arrive, instead of only responding inside this terminal. 
 
 ## When to use
 
 - The user asks to be reachable/reached over Mattermost instead of only this
   terminal, or to keep a conversation going while they step away.
-- Not for a single "task done" / "task blocked" ping — that's
-  `telegram-notification`, a one-shot fire-and-forget.
 - Not for something that needs to outlive this session (a service that starts
   and manages coding sessions on its own, reachable even when no interactive
   session is running) — that's a different architecture entirely, not this
