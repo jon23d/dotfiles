@@ -19,12 +19,52 @@ export interface StartDeps {
   /** The VM's hostname -- AC2: the new chat is named `#<n> : <hostName>`. */
   hostname: string;
   operatorUserId: string;
+  /**
+   * Serializes concurrent `runStart` calls end-to-end (review kan8-1 F1):
+   * without this, two truly concurrent `start` invocations can both read
+   * `sessionStore.listSessions()` before either has called `addSession`, so
+   * both observe "nothing running" and both proceed -- exactly what the
+   * KAN-8 guard exists to prevent. Same in-process queue/promise-chain shape
+   * as sessionNumberStore.ts's `nextSessionNumber` (review kan5-1 F2); see
+   * `createStartSerializer` below. Callers normally get one shared instance
+   * from `createStartSerializer()` for the daemon's whole lifetime (wired in
+   * daemon.ts), not a fresh one per call -- a fresh serializer per call
+   * would have nothing to queue behind and wouldn't serialize anything.
+   */
+  serializeStart: StartSerializer;
+}
+
+export type StartSerializer = <T>(fn: () => Promise<T>) => Promise<T>;
+
+/**
+ * Creates a `StartSerializer`: chains each call onto the promise of the
+ * previous one, so a second near-simultaneous caller always waits for the
+ * first call's full critical section to finish (success or failure) before
+ * its own even begins -- there is never a moment where two calls are both
+ * "inside". Mirrors sessionNumberStore.ts's `queue` pattern exactly (review
+ * kan5-1 F2), including normalizing the queue link to always resolve (never
+ * reject) so one caller's error (e.g. an unknown harness) can't permanently
+ * wedge every later caller behind a forever-rejected link.
+ */
+export function createStartSerializer(): StartSerializer {
+  let queue: Promise<unknown> = Promise.resolve();
+
+  return function serializeStart<T>(fn: () => Promise<T>): Promise<T> {
+    const result = queue.then(fn);
+    queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  };
 }
 
 const USAGE =
-  'Usage: `start <harness> <folder>`\n' +
+  'Usage: `start <harness> <folder> [--force]`\n' +
   `Harnesses: ${KNOWN_HARNESS_NAMES.join(', ')} (only \`opencode\` is implemented so far -- see KAN-5).\n` +
-  'Example: `start opencode /home/jon/my-project`';
+  'Example: `start opencode /home/jon/my-project`\n' +
+  '`--force` (KAN-8) starts anyway even if a session is already running on this VM; without it, `start` refuses ' +
+  'while any session is running.';
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -44,6 +84,24 @@ function isKnownHarnessName(name: string): name is KnownHarnessName {
   return (KNOWN_HARNESS_NAMES as readonly string[]).includes(name);
 }
 
+const FORCE_FLAG = '--force';
+
+/**
+ * Builds the KAN-8 refusal reply naming every currently-running session's
+ * identifier -- per the AC's last bullet, more than one running session
+ * (possible today, since nothing before this ticket prevented it) must not
+ * be silently collapsed down to just the first one found. Backticks are
+ * stripped the same way startCommand.ts already sanitizes agent-controlled
+ * identifiers elsewhere (see performRename below, and kan7-1 F1): a session
+ * identifier can itself contain a backtick after a KAN-7 rename, and it's
+ * about to be interpolated into a backtick-quoted span here.
+ */
+function formatAlreadyRunningReply(runningSessions: readonly Session[]): string {
+  const names = runningSessions.map((session) => `\`${stripBackticks(session.identifier)}\``).join(', ');
+  const pronoun = runningSessions.length > 1 ? 'them' : 'it';
+  return `A session is already running (${names}). Stop ${pronoun} first, or add \`${FORCE_FLAG}\` to start anyway.`;
+}
+
 /**
  * Implements `start` (KAN-5): spawns a harness session, opens its dedicated
  * Mattermost channel, and only registers the session once BOTH have
@@ -61,8 +119,42 @@ function isKnownHarnessName(name: string): name is KnownHarnessName {
  * the daemon's command dispatch is otherwise a stateless one-message-in,
  * one-reply-out design (see messageRouter.ts), and a multi-turn wizard would
  * be a much bigger architectural change than this ticket's scope warrants.
+ *
+ * KAN-8: before any of the above, refuses outright if a session is already
+ * running on this VM and `--force` wasn't given -- a pre-check, not a mutex.
+ * `--force` is recognized anywhere in `args` (not just trailing), matching
+ * how messageRouter.ts's `parseCommand` already treats the whole command as
+ * a flat whitespace-delimited token list rather than inventing a new,
+ * order-sensitive flag convention; it's stripped out before the existing
+ * positional harness/folder parsing runs, so `start opencode /path --force`
+ * and `start --force opencode /path` behave identically. The running-session
+ * check itself runs before harness/folder validation ("before that whole
+ * flow begins" -- refuse immediately, touch nothing: no team lookup, no
+ * session-number allocation, no harness spawn, no Mattermost call).
+ *
+ * The check-through-`addSession` span (everything below, all of
+ * `attemptStart`) runs inside `deps.serializeStart` (review kan8-1 F1): a
+ * plain check-then-act here is a race between two truly concurrent `start`
+ * calls, since `addSession` doesn't happen until after team lookup, session-
+ * number allocation, and harness spawn have all completed -- without
+ * serialization, a second call's check can still observe the pre-first-call
+ * snapshot with nothing running.
  */
-export async function runStart(args: string[], deps: StartDeps): Promise<string> {
+export async function runStart(rawArgs: string[], deps: StartDeps): Promise<string> {
+  const force = rawArgs.includes(FORCE_FLAG);
+  const args = rawArgs.filter((arg) => arg !== FORCE_FLAG);
+
+  return deps.serializeStart(() => attemptStart(args, force, deps));
+}
+
+async function attemptStart(args: string[], force: boolean, deps: StartDeps): Promise<string> {
+  if (!force) {
+    const runningSessions = deps.sessionStore.listSessions().filter((session) => session.status === 'running');
+    if (runningSessions.length > 0) {
+      return formatAlreadyRunningReply(runningSessions);
+    }
+  }
+
   const [harnessArg, folderArg] = args;
   if (harnessArg === undefined || folderArg === undefined) {
     return `Which harness and which folder? ${USAGE}`;

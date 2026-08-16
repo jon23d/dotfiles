@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { commandRegistry } from './commands.js';
 import { decideReply, UNKNOWN_COMMAND_REPLY } from './messageRouter.js';
+import { createStartSerializer } from './startCommand.js';
 import type { RouterDeps } from './messageRouter.js';
 import type { HarnessAdapter, HarnessSessionHandle } from './harness.js';
 import type { Logger } from './logger.js';
@@ -97,6 +98,7 @@ function fakeDeps(overrides: Partial<RouterDeps> = {}): RouterDeps {
     logger: silentLogger(),
     hostname: 'devsix',
     operatorUserId: 'jon-1',
+    serializeStart: createStartSerializer(),
     ...overrides,
   };
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runStart } from './startCommand.js';
+import { createInMemorySessionStore } from './sessionStore.js';
+import { createStartSerializer, runStart } from './startCommand.js';
 import type { StartDeps } from './startCommand.js';
 import type { HarnessAdapter, HarnessSessionHandle } from './harness.js';
 import type { Logger } from './logger.js';
@@ -75,6 +76,12 @@ function deps(overrides: Partial<StartDeps> = {}): StartDeps {
     logger: silentLogger(),
     hostname: 'devsix',
     operatorUserId: 'jon-1',
+    // A fresh serializer per test by default -- with only one `runStart`
+    // call in flight at a time (the common case here), it's equivalent to
+    // no serialization at all. Tests that actually race concurrent calls
+    // (see 'concurrency serialization (review kan8-1 F1)' below) share one
+    // explicit instance across both calls instead.
+    serializeStart: createStartSerializer(),
     ...overrides,
   };
 }
@@ -361,6 +368,147 @@ describe('runStart', () => {
 
     expect(restClient.archiveChannel).toHaveBeenCalledWith('new-channel-id');
     expect(reply).toMatch(/channel has been cleaned up/i);
+  });
+
+  describe('concurrency refusal (KAN-8)', () => {
+    function runningSession(overrides: Partial<Session> = {}): Session {
+      return {
+        id: 'sess-existing',
+        identifier: '#5 : devsix',
+        host: 'devsix',
+        status: 'running',
+        harness: 'opencode',
+        folder: '/home/jon/other-project',
+        channelId: 'chan-5',
+        ...overrides,
+      };
+    }
+
+    it('refuses when a session is already running, naming its identifier, and creates no new session or channel', async () => {
+      const existing = runningSession();
+      const sessionStore = fakeSessionStore({ listSessions: vi.fn().mockReturnValue([existing]) });
+      const restClient = fakeRestClient();
+      const adapter = fakeOpencodeAdapter();
+      const d = deps({ sessionStore, restClient, harnesses: { opencode: adapter } });
+
+      const reply = await runStart(['opencode', '/home/jon/project'], d);
+
+      expect(reply).toContain('#5 : devsix');
+      expect(reply).toMatch(/already running/i);
+      expect(reply).toMatch(/--force/);
+      expect(d.allocateSessionNumber).not.toHaveBeenCalled();
+      expect(restClient.getMyTeams).not.toHaveBeenCalled();
+      expect(adapter.start).not.toHaveBeenCalled();
+      expect(restClient.createPrivateChannel).not.toHaveBeenCalled();
+      expect(sessionStore.addSession).not.toHaveBeenCalled();
+    });
+
+    it('proceeds with the normal start flow when `--force` is given, even with a session already running', async () => {
+      const existing = runningSession();
+      const sessionStore = fakeSessionStore({ listSessions: vi.fn().mockReturnValue([existing]) });
+      const d = deps({ sessionStore });
+
+      const reply = await runStart(['opencode', '/home/jon/project', '--force'], d);
+
+      expect(reply).toContain('#4 : devsix');
+      expect(sessionStore.addSession).toHaveBeenCalled();
+    });
+
+    it('recognizes `--force` anywhere in the args, not just at the end', async () => {
+      const existing = runningSession();
+      const sessionStore = fakeSessionStore({ listSessions: vi.fn().mockReturnValue([existing]) });
+      const d = deps({ sessionStore });
+
+      const reply = await runStart(['--force', 'opencode', '/home/jon/project'], d);
+
+      expect(reply).toContain('#4 : devsix');
+      expect(sessionStore.addSession).toHaveBeenCalled();
+    });
+
+    it('proceeds exactly as today when no session is currently running (no `--force` needed)', async () => {
+      const sessionStore = fakeSessionStore({ listSessions: vi.fn().mockReturnValue([]) });
+      const d = deps({ sessionStore });
+
+      const reply = await runStart(['opencode', '/home/jon/project'], d);
+
+      expect(reply).toContain('#4 : devsix');
+      expect(sessionStore.addSession).toHaveBeenCalled();
+    });
+
+    it('ignores a stopped session -- only `running` status blocks a new start', async () => {
+      const stopped = runningSession({ id: 'sess-stopped', status: 'stopped' });
+      const sessionStore = fakeSessionStore({ listSessions: vi.fn().mockReturnValue([stopped]) });
+      const d = deps({ sessionStore });
+
+      const reply = await runStart(['opencode', '/home/jon/project'], d);
+
+      expect(reply).toContain('#4 : devsix');
+      expect(sessionStore.addSession).toHaveBeenCalled();
+    });
+
+    it('when more than one session is already running, names more than just the first (lists all of them)', async () => {
+      const first = runningSession({ id: 'sess-a', identifier: '#5 : devsix' });
+      const second = runningSession({ id: 'sess-b', identifier: '#6 : devsix', channelId: 'chan-6' });
+      const sessionStore = fakeSessionStore({ listSessions: vi.fn().mockReturnValue([first, second]) });
+      const d = deps({ sessionStore });
+
+      const reply = await runStart(['opencode', '/home/jon/project'], d);
+
+      expect(reply).toContain('#5 : devsix');
+      expect(reply).toContain('#6 : devsix');
+      expect(d.allocateSessionNumber).not.toHaveBeenCalled();
+    });
+
+    it('sanitizes backticks out of a running session\'s (possibly agent-renamed) identifier before interpolating it into the refusal', async () => {
+      const existing = runningSession({ identifier: 'KAN-4`; rm -rf / : devsix' });
+      const sessionStore = fakeSessionStore({ listSessions: vi.fn().mockReturnValue([existing]) });
+      const d = deps({ sessionStore });
+
+      const reply = await runStart(['opencode', '/home/jon/project'], d);
+
+      expect(reply).not.toContain('KAN-4`;');
+    });
+
+    it('checks for a running session before validating harness/folder args, per the "before that whole flow begins" design', async () => {
+      const existing = runningSession();
+      const sessionStore = fakeSessionStore({ listSessions: vi.fn().mockReturnValue([existing]) });
+      const d = deps({ sessionStore });
+
+      const reply = await runStart([], d);
+
+      expect(reply).toMatch(/already running/i);
+      expect(reply).not.toMatch(/harness/i);
+    });
+
+    it('serializes two truly concurrent `start` calls so only one session is created, even though neither observes anything running yet (review kan8-1 F1)', async () => {
+      // A real, stateful SessionStore (not the always-empty fake) and one
+      // shared serializer across both calls -- exactly the two pieces the
+      // race needs: `addSession` from the winning call must actually be
+      // visible to the second call's running-session check, and both calls
+      // must be genuinely in flight together (`Promise.all`, no `await`
+      // between them), matching the pattern sessionNumberStore.test.ts's
+      // post-kan5-1-F2 regression test already uses for the same class of
+      // check-then-act race.
+      const sessionStore = createInMemorySessionStore();
+      const serializeStart = createStartSerializer();
+      const restClient = fakeRestClient();
+      const adapter = fakeOpencodeAdapter();
+      const d = deps({ sessionStore, restClient, serializeStart, harnesses: { opencode: adapter } });
+
+      const [replyA, replyB] = await Promise.all([
+        runStart(['opencode', '/home/jon/project-a'], d),
+        runStart(['opencode', '/home/jon/project-b'], d),
+      ]);
+
+      // Without serialization, both calls would see `listSessions()` return
+      // `[]` (neither has called `addSession` yet) and both would proceed --
+      // exactly the bug this test guards against.
+      expect(sessionStore.listSessions()).toHaveLength(1);
+      expect(adapter.start).toHaveBeenCalledTimes(1);
+      const replies = [replyA, replyB];
+      expect(replies.filter((reply) => /already running/i.test(reply))).toHaveLength(1);
+      expect(replies.filter((reply) => /^Started/.test(reply))).toHaveLength(1);
+    });
   });
 
   describe('onRename wiring (KAN-7)', () => {
