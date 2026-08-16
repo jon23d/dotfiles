@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -274,7 +274,7 @@ describe('createOpencodeHarness', () => {
       );
     });
 
-    it('does not re-spawn (and so keeps the first operator id) when a second session starts against the already-running shared server', async () => {
+    it('does not re-spawn (and so keeps the first operator id, ignoring a differing second one) when a second session starts against the already-running shared server', async () => {
       const child = fakeChildProcess();
       const spawnProcess = vi.fn().mockReturnValue(child);
       server.use(
@@ -285,10 +285,19 @@ describe('createOpencodeHarness', () => {
       const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
       const dir2 = await mkdtemp(join(tmpdir(), 'control-plane-daemon-opencode-test-operator-'));
 
+      // Deliberately different values across the two calls (review kan10-1 F2): using
+      // the same id for both would make "kept the first" and "kept the second"
+      // indistinguishable. The shared server is spawned once, from the first call, so
+      // its env must reflect operator-42 specifically, not operator-99.
       await harness.start({ folder: dir, operatorUserId: 'operator-42', logger: silentLogger() });
-      await harness.start({ folder: dir2, operatorUserId: 'operator-42', logger: silentLogger() });
+      await harness.start({ folder: dir2, operatorUserId: 'operator-99', logger: silentLogger() });
 
       expect(spawnProcess).toHaveBeenCalledTimes(1);
+      expect(spawnProcess).toHaveBeenCalledWith(
+        'opencode',
+        expect.any(Array),
+        expect.objectContaining({ env: expect.objectContaining({ [MATTERMOST_OPERATOR_USER_ID_ENV_VAR]: 'operator-42' }) }),
+      );
       await rm(dir2, { recursive: true, force: true });
     });
   });
@@ -670,6 +679,27 @@ describe('createOpencodeHarness', () => {
       expect(written).toContain(`${MATTERMOST_SESSION_CHANNEL_ID_ENV_VAR}='chan-abc-123'`);
     });
 
+    it('writes via a tmp-path-then-rename so no partial/temp file is left behind afterward (review kan10-1 F1: same atomic pattern as sessionNumberStore.ts/stateStore.ts)', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      server.use(
+        healthyHandler(),
+        agentAvailableHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+
+      await handle.provisionChannelId('chan-abc-123');
+
+      const entries = await readdir(dir);
+      // Only the final marker file (and whatever `.gitignore` provisioning itself
+      // added) should remain -- no `.tmp-<pid>-<uuid>` sibling left over from the
+      // write, which is exactly what a `rename()`-into-place guarantees on success.
+      expect(entries.filter((name) => name.startsWith(`${SESSION_ENV_FILE_NAME}.tmp-`))).toHaveLength(0);
+      expect(entries).toContain(SESSION_ENV_FILE_NAME);
+    });
+
     it('scopes the written file to this session\'s own folder, not another session\'s, when two sessions share the process', async () => {
       const child = fakeChildProcess();
       const spawnProcess = vi.fn().mockReturnValue(child);
@@ -732,6 +762,70 @@ describe('createOpencodeHarness', () => {
       await rm(dir, { recursive: true, force: true });
 
       await expect(handle.provisionChannelId('chan-abc-123')).rejects.toThrow();
+    });
+
+    describe('.gitignore protection (review kan10-1 F3)', () => {
+      it('best-effort adds an ignore rule for the marker file to the session folder\'s own .gitignore, since the folder is the operator\'s actual project directory, not a daemon-owned location', async () => {
+        const child = fakeChildProcess();
+        const spawnProcess = vi.fn().mockReturnValue(child);
+        server.use(
+          healthyHandler(),
+          agentAvailableHandler(),
+          http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+        );
+        const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+        const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+
+        await handle.provisionChannelId('chan-abc-123');
+
+        const gitignore = await readFile(join(dir, '.gitignore'), 'utf8');
+        expect(gitignore).toContain(`${SESSION_ENV_FILE_NAME}*`);
+      });
+
+      it('appends to an existing .gitignore rather than overwriting it, and does not duplicate the entry on a repeat call', async () => {
+        const child = fakeChildProcess();
+        const spawnProcess = vi.fn().mockReturnValue(child);
+        server.use(
+          healthyHandler(),
+          agentAvailableHandler(),
+          http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+        );
+        await writeFile(join(dir, '.gitignore'), 'node_modules/\n', 'utf8');
+        const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+        const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+
+        await handle.provisionChannelId('chan-abc-123');
+        await handle.provisionChannelId('chan-abc-123-renamed');
+
+        const gitignore = await readFile(join(dir, '.gitignore'), 'utf8');
+        expect(gitignore).toContain('node_modules/');
+        const occurrences = gitignore.split(`${SESSION_ENV_FILE_NAME}*`).length - 1;
+        expect(occurrences).toBe(1);
+      });
+
+      it('logs but does not throw when the .gitignore itself cannot be written, and still writes the real marker file (best-effort, not the loud-failure path)', async () => {
+        const child = fakeChildProcess();
+        const spawnProcess = vi.fn().mockReturnValue(child);
+        server.use(
+          healthyHandler(),
+          agentAvailableHandler(),
+          http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+        );
+        // A directory at the `.gitignore` path makes both the read and the write
+        // opencodeHarness.ts attempts against it fail with something other than
+        // ENOENT (EISDIR) -- exercising the "some other error" branch, not just
+        // "file doesn't exist yet".
+        await mkdir(join(dir, '.gitignore'));
+        const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+        const logger = silentLogger();
+        const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger });
+
+        await expect(handle.provisionChannelId('chan-abc-123')).resolves.toBeUndefined();
+
+        expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/gitignore/i), expect.anything());
+        const written = await readFile(join(dir, SESSION_ENV_FILE_NAME), 'utf8');
+        expect(written).toContain('chan-abc-123');
+      });
     });
   });
 });
