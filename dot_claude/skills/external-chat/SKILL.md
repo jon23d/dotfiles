@@ -1,7 +1,7 @@
 ---
 name: external-chat
 description: Use when the user wants an ongoing, live conversation with you over Mattermost instead of only in this terminal session — e.g. "keep talking to me in chat", "watch for my replies while I'm away", "let's continue over Mattermost".
---
+---
 
 # External Chat
 
@@ -22,48 +22,44 @@ reply as they arrive, instead of only responding inside this terminal.
 
 ## Setup
 
-1. **Resolve identities and the channel**, using the `mattermost` MCP server
-   if available, or the raw REST API otherwise:
+1. **Resolve identities and the channel** via the `mattermost` MCP server if
+   available, else the raw REST API:
    - Your own user id — `GET /api/v4/users/me`.
-   - The operator's user id — `GET /api/v4/users/email/<their email>`. Ask
-     for their email if you don't have it; don't guess.
-   - The DM channel id — `POST /api/v4/channels/direct` with
-     `[yourId, theirId]`. Idempotent: safe to call every time, returns the
-     existing channel if one's already there. (Mattermost allows exactly one
-     DM channel per pair of users — there is no such thing as a second one.)
+   - The operator's user id *and* username — `GET /api/v4/users/email/<email>`
+     (default to `$OPERATOR_EMAIL`, same variable/default the control-plane
+     daemon uses, before asking the user). One response, both fields — grab
+     `username` here too, step 3 needs it and it's easy to miss otherwise.
+   - The channel id — `POST /api/v4/channels/direct` with `[yourId, theirId]`.
+     Idempotent, safe to call every time. (Exactly one DM per pair of users —
+     no such thing as a second one.)
    - Host and bot token: derive the REST host from `$MATTERMOST_MCP_URL`
-     (strip the `/plugins/...` MCP-specific path, keep the scheme+host), and
-     reuse `$MATTERMOST_MCP_TOKEN` — it's a real Personal Access Token, valid
-     for the plain REST/WebSocket API too, not just the MCP endpoint.
+     (strip the MCP-specific path, keep scheme+host); reuse
+     `$MATTERMOST_MCP_TOKEN` as the Bearer token — valid for the plain
+     REST/WebSocket API too, not just the MCP endpoint.
 2. **Start the watcher** via the `Monitor` tool (not plain `Bash
-   run_in_background`) so each new message surfaces as an event in your
-   conversation instead of something you have to poll for yourself:
+   run_in_background`), so new messages surface as events instead of
+   something you poll for:
    ```
    MM_HOST=<resolved host> MM_TOKEN=$MATTERMOST_MCP_TOKEN \
    MM_CHANNEL=<channel id> MM_USER_ID=<operator's user id> \
    /path/to/scripts/watch.sh
    ```
-   Copy `scripts/watch.sh` somewhere runnable first if it's not already
-   on disk where you can execute it.
-3. **Reply** with the `mattermost` MCP server's `dm` tool. Always pass
-   `username` explicitly set to the operator — the tool defaults to sending
-   to *yourself* when it's omitted, which silently posts to the wrong
-   identity and looks like nothing happened.
+3. **Reply** with the `mattermost` MCP server's `dm` tool, `username` always
+   set explicitly to the operator's username from step 1 — omitted, it
+   defaults to sending to *yourself*, which silently posts to the wrong
+   identity.
 
 ## Known gotchas
 
-All confirmed the hard way in a real session, not theoretical. Full detail
-and the actual fix for each lives as comments in `scripts/watch.sh` — this is
-just the index:
+Confirmed the hard way, not theoretical — full detail and the fix for each
+lives as comments in `scripts/watch.sh`; this is just the index:
 
-- Naive `date +%s%3N` millisecond timestamps aren't portable — some `date`
-  builds silently give nanosecond precision instead, breaking the poll
-  cursor in a way that looks like the watcher is fine.
+- Naive millisecond timestamps aren't portable across `date` builds.
 - `/bin/sh`'s `echo` can silently corrupt JSON containing `\n` — use `printf`.
-- A watcher that swallows connection/HTTP errors looks identical to one
-  that's working. Surface failures as visible lines, always.
-- Mattermost's `since` filter is a strict exclusive boundary; naive
-  timestamp-based deduping silently drops same-millisecond sibling messages.
+- A watcher that swallows connection/HTTP errors is indistinguishable from
+  one that's working — surface failures as visible lines, always.
+- Mattermost's `since` filter is exclusive; naive dedupe drops
+  same-millisecond sibling messages.
 
 ## Ending the conversation
 
