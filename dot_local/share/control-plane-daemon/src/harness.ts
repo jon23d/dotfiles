@@ -33,4 +33,19 @@ export interface HarnessSessionHandle {
    * lying about it still running.
    */
   onExit(callback: (info: { code: number | null }) => void): void;
+  /**
+   * Registers a callback fired every time the agent running inside this
+   * session signals its own rename (KAN-7: "I picked up a ticket, rename my
+   * chat to reflect that"). May fire zero times (never renamed), once, or
+   * many times (AC2 -- the agent's work identity can change again later) --
+   * callers must not assume this fires at most once, unlike `onExit`.
+   * `identifier` is just the new work-identity part (e.g. `KAN-4`), not the
+   * full `<identifier> : <hostName>` chat name -- appending the host suffix
+   * and actually renaming the Mattermost channel is the caller's job
+   * (startCommand.ts), not this harness's. Each concrete harness decides for
+   * itself how its agent signals a rename (e.g. opencode's own session
+   * title, watched over its event stream); this callback is the
+   * harness-agnostic seam the rest of the daemon reacts to.
+   */
+  onRename(callback: (identifier: string) => void): void;
 }

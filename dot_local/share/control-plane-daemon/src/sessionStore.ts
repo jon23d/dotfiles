@@ -50,6 +50,14 @@ export interface SessionStore {
    * would be more surprising than useful.
    */
   markStopped(sessionId: string): void;
+  /**
+   * Replaces a session's `identifier` (KAN-7: the agent running inside the
+   * session renamed its own chat once it knew a concrete work identity, e.g.
+   * a ticket key). Callable more than once per session -- AC2 requires the
+   * name to keep tracking the agent's current work identity, not just the
+   * first rename. Same no-op-on-unknown-id convention as `markStopped`.
+   */
+  renameSession(sessionId: string, newIdentifier: string): void;
 }
 
 /**
@@ -81,6 +89,11 @@ export function createInMemorySessionStore(): SessionStore {
     markStopped(sessionId) {
       const found = sessions.find((s) => s.id === sessionId);
       if (found) found.status = 'stopped';
+    },
+
+    renameSession(sessionId, newIdentifier) {
+      const found = sessions.find((s) => s.id === sessionId);
+      if (found) found.identifier = newIdentifier;
     },
   };
 }

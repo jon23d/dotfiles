@@ -272,4 +272,29 @@ describe('createMattermostRestClient', () => {
 
     await expect(client().archiveChannel('chan-1')).rejects.toThrow(/403/);
   });
+
+  it('renameChannel puts the new name/display_name to the channel (KAN-7)', async () => {
+    server.use(
+      http.put(`${BASE_URL}/api/v4/channels/chan-1`, async ({ request }) => {
+        expect(request.headers.get('Authorization')).toBe(`Bearer ${TOKEN}`);
+        const body = await request.json();
+        expect(body).toEqual({ id: 'chan-1', name: 'kan-4-devsix', display_name: 'KAN-4 : devsix' });
+        return HttpResponse.json({ id: 'chan-1', name: 'kan-4-devsix', display_name: 'KAN-4 : devsix' });
+      }),
+    );
+
+    await expect(
+      client().renameChannel('chan-1', 'kan-4-devsix', 'KAN-4 : devsix'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('renameChannel throws a loud error on failure (e.g. a name collision with another channel)', async () => {
+    server.use(
+      http.put(`${BASE_URL}/api/v4/channels/chan-1`, () =>
+        HttpResponse.json({ message: 'A channel with that name already exists' }, { status: 400 }),
+      ),
+    );
+
+    await expect(client().renameChannel('chan-1', 'dup', 'dup')).rejects.toThrow(/400/);
+  });
 });

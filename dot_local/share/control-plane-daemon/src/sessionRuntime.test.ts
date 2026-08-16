@@ -7,6 +7,7 @@ function fakeHandle(overrides: Partial<HarnessSessionHandle> = {}): HarnessSessi
     sendPrompt: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn(),
     onExit: vi.fn(),
+    onRename: vi.fn(),
     ...overrides,
   };
 }

@@ -45,6 +45,29 @@ function healthyHandler() {
   return http.get(`${BASE_URL}/global/health`, () => HttpResponse.json({ healthy: true, version: '1.0.0' }));
 }
 
+/** A hand-controlled SSE stream for `/event` -- lets a test push synthetic opencode
+ * events (`session.updated`, etc.) at exactly the moment it wants, rather than
+ * pre-loading a fixed array and racing the harness's own async stream-reading loop
+ * (KAN-7). Mirrors real SSE framing: `data: <json>\n\n` per event. */
+function controllableEventStream() {
+  let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined;
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controllerRef = controller;
+    },
+  });
+  return {
+    handler: http.get(`${BASE_URL}/event`, () => new HttpResponse(stream, { headers: { 'Content-Type': 'text/event-stream' } })),
+    push(event: unknown) {
+      controllerRef?.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+    },
+    close() {
+      controllerRef?.close();
+    },
+  };
+}
+
 let dir: string;
 
 beforeEach(async () => {
@@ -290,5 +313,142 @@ describe('createOpencodeHarness', () => {
 
     await expect(harness.start({ folder: dir, logger: silentLogger() })).rejects.toThrow(/ready|timed out/i);
     expect(child.kill).toHaveBeenCalled();
+  });
+
+  describe('onRename (KAN-7)', () => {
+    it('fires with the new title when opencode reports this session\'s title changed', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const sse = controllableEventStream();
+      server.use(
+        healthyHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
+        sse.handler,
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+      const handle = await harness.start({ folder: dir, logger: silentLogger() });
+      const onRename = vi.fn();
+      handle.onRename(onRename);
+
+      sse.push({ type: 'session.updated', properties: { sessionID: 'ses_abc123', info: { title: 'KAN-4' } } });
+
+      await vi.waitFor(() => expect(onRename).toHaveBeenCalledWith('KAN-4'));
+      sse.close();
+    });
+
+    it('fires again on a second, later title change (AC2: work identity can change again)', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const sse = controllableEventStream();
+      server.use(
+        healthyHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
+        sse.handler,
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+      const handle = await harness.start({ folder: dir, logger: silentLogger() });
+      const onRename = vi.fn();
+      handle.onRename(onRename);
+
+      sse.push({ type: 'session.updated', properties: { sessionID: 'ses_abc123', info: { title: 'KAN-4' } } });
+      await vi.waitFor(() => expect(onRename).toHaveBeenCalledTimes(1));
+
+      sse.push({ type: 'session.updated', properties: { sessionID: 'ses_abc123', info: { title: 'KAN-9' } } });
+      await vi.waitFor(() => expect(onRename).toHaveBeenCalledTimes(2));
+
+      expect(onRename).toHaveBeenNthCalledWith(1, 'KAN-4');
+      expect(onRename).toHaveBeenNthCalledWith(2, 'KAN-9');
+      sse.close();
+    });
+
+    it('ignores a title change reported for a different session sharing the same opencode server', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const sse = controllableEventStream();
+      let created = 0;
+      server.use(
+        healthyHandler(),
+        http.post(`${BASE_URL}/session`, () => {
+          created += 1;
+          return HttpResponse.json({ id: created === 1 ? 'ses_aaa' : 'ses_bbb', title: 'New session - x' });
+        }),
+        sse.handler,
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+      const dir2 = await mkdtemp(join(tmpdir(), 'control-plane-daemon-opencode-test-rename-'));
+      const handleA = await harness.start({ folder: dir, logger: silentLogger() });
+      await harness.start({ folder: dir2, logger: silentLogger() });
+      const onRenameA = vi.fn();
+      handleA.onRename(onRenameA);
+
+      sse.push({ type: 'session.updated', properties: { sessionID: 'ses_bbb', info: { title: 'OTHER-1' } } });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(onRenameA).not.toHaveBeenCalled();
+      sse.close();
+      await rm(dir2, { recursive: true, force: true });
+    });
+
+    it('does not re-fire when a session.updated event repeats the same title (no real change)', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const sse = controllableEventStream();
+      server.use(
+        healthyHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
+        sse.handler,
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+      const handle = await harness.start({ folder: dir, logger: silentLogger() });
+      const onRename = vi.fn();
+      handle.onRename(onRename);
+
+      sse.push({ type: 'session.updated', properties: { sessionID: 'ses_abc123', info: { title: 'KAN-4' } } });
+      await vi.waitFor(() => expect(onRename).toHaveBeenCalledTimes(1));
+
+      sse.push({ type: 'session.updated', properties: { sessionID: 'ses_abc123', info: { title: 'KAN-4' } } });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(onRename).toHaveBeenCalledTimes(1);
+      sse.close();
+    });
+
+    it('ignores unrelated event types on the shared stream without throwing or misfiring', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const sse = controllableEventStream();
+      server.use(
+        healthyHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
+        sse.handler,
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+      const handle = await harness.start({ folder: dir, logger: silentLogger() });
+      const onRename = vi.fn();
+      handle.onRename(onRename);
+
+      sse.push({ type: 'message.part.updated', properties: { sessionID: 'ses_abc123' } });
+      sse.push({ type: 'session.created', properties: { sessionID: 'ses_abc123', info: { title: 'New session - x' } } });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(onRename).not.toHaveBeenCalled();
+      sse.close();
+    });
+
+    it('logs loudly and does not crash the daemon when the event stream cannot be opened at all', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      server.use(
+        healthyHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
+        http.get(`${BASE_URL}/event`, () => new HttpResponse(null, { status: 500 })),
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+      const logger = silentLogger();
+      const handle = await harness.start({ folder: dir, logger });
+
+      expect(() => handle.onRename(vi.fn())).not.toThrow();
+      await vi.waitFor(() => expect(logger.error).toHaveBeenCalled());
+    });
   });
 });

@@ -79,10 +79,72 @@ async function validateFolder(folder: string): Promise<void> {
   }
 }
 
-const sessionSchema = z.object({ id: z.string().min(1) }).passthrough();
+const sessionSchema = z.object({ id: z.string().min(1), title: z.string().optional() }).passthrough();
+
+// The `/event` SSE stream (KAN-7) carries every event type opencode emits
+// (message parts, permissions, session lifecycle, ...) -- this only
+// describes the one shape this module cares about, `session.updated`.
+// `safeParse`-ing every frame against it and silently ignoring a mismatch is
+// the correct behavior for the other event types, not an error condition.
+const sessionUpdatedEventSchema = z
+  .object({
+    type: z.literal('session.updated'),
+    properties: z.object({
+      sessionID: z.string().min(1),
+      info: z.object({ title: z.string() }).passthrough(),
+    }),
+  })
+  .passthrough();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Per-session rename-detection state (KAN-7), keyed by opencode session id.
+ * `lastTitle` seeds from the title opencode assigned at session creation
+ * (its placeholder `New session - <timestamp>` default) so that placeholder
+ * never itself counts as a "rename"; only a later, *different* title --
+ * meaning the agent explicitly set one via `PATCH /session/:id` -- does.
+ * Live-verified (2026-08-16, opencode 1.18.18) that opencode does NOT
+ * auto-rewrite this title from conversation content on its own: a real
+ * prompt/response round-trip against a real model left the title completely
+ * unchanged, so a `session.updated` title change is a safe, deliberate
+ * signal, not something ordinary conversation could trigger by accident.
+ */
+interface RenameState {
+  lastTitle: string;
+  callbacks: Array<(identifier: string) => void>;
+}
+
+function handleRawSseFrame(rawEvent: string, renameState: Map<string, RenameState>, logger: Logger): void {
+  const dataLines = rawEvent
+    .split('\n')
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice('data:'.length).trim());
+  if (dataLines.length === 0) return; // e.g. a bare comment/keepalive frame
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(dataLines.join('\n'));
+  } catch (cause) {
+    logger.error('failed to parse an opencode event-stream frame as JSON -- ignored, stream keeps reading', {
+      cause,
+      rawEvent,
+    });
+    return;
+  }
+
+  const event = sessionUpdatedEventSchema.safeParse(parsed);
+  if (!event.success) return; // most frames on this stream aren't session.updated -- expected, not an error
+
+  const { sessionID, info } = event.data.properties;
+  const state = renameState.get(sessionID);
+  if (!state) return; // a session this harness isn't tracking (e.g. opened via the opencode TUI directly)
+  if (info.title === state.lastTitle) return; // no real change (e.g. a cost/tokens-only update replaying the same title)
+
+  state.lastTitle = info.title;
+  for (const cb of state.callbacks) cb(info.title);
 }
 
 /** Owns the single shared `opencode serve` process (spawned lazily) and every
@@ -96,6 +158,14 @@ interface SharedServer {
   exitCode: number | null;
   exitCallbacks: Array<(info: { code: number | null }) => void>;
   child: SpawnedProcessLike;
+  /** Rename-detection state (KAN-7), one entry per session this harness
+   * started on this shared server, keyed by opencode session id. */
+  renameState: Map<string, RenameState>;
+  /** Guards the `/event` SSE subscription (KAN-7) to open at most once per
+   * shared server, lazily, the first time any session registers an
+   * `onRename` callback -- sessions that never use the rename feature never
+   * pay for it. */
+  eventStreamStarted: boolean;
 }
 
 export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): HarnessAdapter {
@@ -132,7 +202,15 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
       cwd: process.cwd(),
     });
 
-    const server: SharedServer = { baseUrl, exited: false, exitCode: null, exitCallbacks: [], child };
+    const server: SharedServer = {
+      baseUrl,
+      exited: false,
+      exitCode: null,
+      exitCallbacks: [],
+      child,
+      renameState: new Map(),
+      eventStreamStarted: false,
+    };
 
     let stderrOutput = '';
     child.stderr?.on('data', (chunk) => {
@@ -200,7 +278,7 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     return server;
   }
 
-  async function createSession(server: SharedServer, folder: string): Promise<string> {
+  async function createSession(server: SharedServer, folder: string): Promise<{ id: string; title: string }> {
     const res = await fetchImpl(`${server.baseUrl}/session?directory=${encodeURIComponent(folder)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -214,7 +292,73 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     if (!parsed.success) {
       throw new Error(`opencode session create returned an unexpected response shape: ${JSON.stringify(parsed.error.issues)}`);
     }
-    return parsed.data.id;
+    // Real opencode (1.18.18, live-verified) always includes `title` in this
+    // response -- the `?? ''` fallback only guards a hypothetically
+    // nonconforming server; if it ever triggers, the first genuine title the
+    // agent sets will still correctly be detected as a change from ''.
+    return { id: parsed.data.id, title: parsed.data.title ?? '' };
+  }
+
+  /**
+   * Opens the shared server's `/event` SSE stream at most once (KAN-7),
+   * lazily -- the first time any session on this shared server registers an
+   * `onRename` callback. Deliberately does NOT reconnect if the stream ends
+   * or errors: this mirrors the rest of this module's risk posture (there is
+   * no ongoing health-monitoring of the shared process either, beyond its
+   * one-time `exit` event) rather than building bespoke reconnect/backoff
+   * infrastructure for a best-effort detection feature. A dropped stream is
+   * logged loudly (never silent -- same principle as everywhere else in this
+   * epic) so it's visible in the daemon's logs, even though nothing here
+   * retries it automatically.
+   */
+  function ensureEventStream(server: SharedServer, logger: Logger): void {
+    if (server.eventStreamStarted) return;
+    server.eventStreamStarted = true;
+    void readEventStream(server, logger);
+  }
+
+  async function readEventStream(server: SharedServer, logger: Logger): Promise<void> {
+    let res: Response;
+    try {
+      res = await fetchImpl(`${server.baseUrl}/event`);
+    } catch (err) {
+      logger.error(
+        'failed to open the opencode event stream -- session-rename detection (KAN-7) will not work for this shared server',
+        { err },
+      );
+      return;
+    }
+    if (!res.ok || !res.body) {
+      logger.error(
+        'opencode event stream responded without a usable body -- session-rename detection (KAN-7) will not work for this shared server',
+        { status: res.status, statusText: res.statusText },
+      );
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let sepIndex = buffer.indexOf('\n\n');
+        while (sepIndex !== -1) {
+          handleRawSseFrame(buffer.slice(0, sepIndex), server.renameState, logger);
+          buffer = buffer.slice(sepIndex + 2);
+          sepIndex = buffer.indexOf('\n\n');
+        }
+      }
+    } catch (err) {
+      logger.error(
+        'opencode event stream read failed -- session-rename detection (KAN-7) has stopped for this shared server',
+        { err },
+      );
+      return;
+    }
+    logger.warn('opencode event stream ended -- session-rename detection (KAN-7) has stopped for this shared server');
   }
 
   return {
@@ -223,7 +367,8 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     async start({ folder, logger }) {
       await validateFolder(folder);
       const server = await ensureSharedServer(logger);
-      const sessionId = await createSession(server, folder);
+      const { id: sessionId, title: initialTitle } = await createSession(server, folder);
+      server.renameState.set(sessionId, { lastTitle: initialTitle, callbacks: [] });
 
       const handle: HarnessSessionHandle = {
         async sendPrompt(message) {
@@ -248,6 +393,11 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
           fetchImpl(`${server.baseUrl}/session/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }).catch((err) => {
             logger.error('failed to delete opencode session on stop (best-effort, ignored)', { err, sessionId });
           });
+          // Stop tracking rename state for a session that's gone -- nothing
+          // will ever call these callbacks again, and this keeps the map
+          // from growing unbounded across many start/stop cycles over the
+          // daemon's lifetime (KAN-7).
+          server.renameState.delete(sessionId);
         },
 
         onExit(callback) {
@@ -256,6 +406,11 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
             return;
           }
           server.exitCallbacks.push(callback);
+        },
+
+        onRename(callback) {
+          server.renameState.get(sessionId)?.callbacks.push(callback);
+          ensureEventStream(server, logger);
         },
       };
 
