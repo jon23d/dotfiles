@@ -19,6 +19,44 @@ export interface StartDeps {
   /** The VM's hostname -- AC2: the new chat is named `#<n> : <hostName>`. */
   hostname: string;
   operatorUserId: string;
+  /**
+   * Serializes concurrent `runStart` calls end-to-end (review kan8-1 F1):
+   * without this, two truly concurrent `start` invocations can both read
+   * `sessionStore.listSessions()` before either has called `addSession`, so
+   * both observe "nothing running" and both proceed -- exactly what the
+   * KAN-8 guard exists to prevent. Same in-process queue/promise-chain shape
+   * as sessionNumberStore.ts's `nextSessionNumber` (review kan5-1 F2); see
+   * `createStartSerializer` below. Callers normally get one shared instance
+   * from `createStartSerializer()` for the daemon's whole lifetime (wired in
+   * daemon.ts), not a fresh one per call -- a fresh serializer per call
+   * would have nothing to queue behind and wouldn't serialize anything.
+   */
+  serializeStart: StartSerializer;
+}
+
+export type StartSerializer = <T>(fn: () => Promise<T>) => Promise<T>;
+
+/**
+ * Creates a `StartSerializer`: chains each call onto the promise of the
+ * previous one, so a second near-simultaneous caller always waits for the
+ * first call's full critical section to finish (success or failure) before
+ * its own even begins -- there is never a moment where two calls are both
+ * "inside". Mirrors sessionNumberStore.ts's `queue` pattern exactly (review
+ * kan5-1 F2), including normalizing the queue link to always resolve (never
+ * reject) so one caller's error (e.g. an unknown harness) can't permanently
+ * wedge every later caller behind a forever-rejected link.
+ */
+export function createStartSerializer(): StartSerializer {
+  let queue: Promise<unknown> = Promise.resolve();
+
+  return function serializeStart<T>(fn: () => Promise<T>): Promise<T> {
+    const result = queue.then(fn);
+    queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  };
 }
 
 const USAGE =
@@ -93,11 +131,23 @@ function formatAlreadyRunningReply(runningSessions: readonly Session[]): string 
  * check itself runs before harness/folder validation ("before that whole
  * flow begins" -- refuse immediately, touch nothing: no team lookup, no
  * session-number allocation, no harness spawn, no Mattermost call).
+ *
+ * The check-through-`addSession` span (everything below, all of
+ * `attemptStart`) runs inside `deps.serializeStart` (review kan8-1 F1): a
+ * plain check-then-act here is a race between two truly concurrent `start`
+ * calls, since `addSession` doesn't happen until after team lookup, session-
+ * number allocation, and harness spawn have all completed -- without
+ * serialization, a second call's check can still observe the pre-first-call
+ * snapshot with nothing running.
  */
 export async function runStart(rawArgs: string[], deps: StartDeps): Promise<string> {
   const force = rawArgs.includes(FORCE_FLAG);
   const args = rawArgs.filter((arg) => arg !== FORCE_FLAG);
 
+  return deps.serializeStart(() => attemptStart(args, force, deps));
+}
+
+async function attemptStart(args: string[], force: boolean, deps: StartDeps): Promise<string> {
   if (!force) {
     const runningSessions = deps.sessionStore.listSessions().filter((session) => session.status === 'running');
     if (runningSessions.length > 0) {

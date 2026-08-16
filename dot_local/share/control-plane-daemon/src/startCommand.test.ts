@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runStart } from './startCommand.js';
+import { createInMemorySessionStore } from './sessionStore.js';
+import { createStartSerializer, runStart } from './startCommand.js';
 import type { StartDeps } from './startCommand.js';
 import type { HarnessAdapter, HarnessSessionHandle } from './harness.js';
 import type { Logger } from './logger.js';
@@ -75,6 +76,12 @@ function deps(overrides: Partial<StartDeps> = {}): StartDeps {
     logger: silentLogger(),
     hostname: 'devsix',
     operatorUserId: 'jon-1',
+    // A fresh serializer per test by default -- with only one `runStart`
+    // call in flight at a time (the common case here), it's equivalent to
+    // no serialization at all. Tests that actually race concurrent calls
+    // (see 'concurrency serialization (review kan8-1 F1)' below) share one
+    // explicit instance across both calls instead.
+    serializeStart: createStartSerializer(),
     ...overrides,
   };
 }
@@ -471,6 +478,36 @@ describe('runStart', () => {
 
       expect(reply).toMatch(/already running/i);
       expect(reply).not.toMatch(/harness/i);
+    });
+
+    it('serializes two truly concurrent `start` calls so only one session is created, even though neither observes anything running yet (review kan8-1 F1)', async () => {
+      // A real, stateful SessionStore (not the always-empty fake) and one
+      // shared serializer across both calls -- exactly the two pieces the
+      // race needs: `addSession` from the winning call must actually be
+      // visible to the second call's running-session check, and both calls
+      // must be genuinely in flight together (`Promise.all`, no `await`
+      // between them), matching the pattern sessionNumberStore.test.ts's
+      // post-kan5-1-F2 regression test already uses for the same class of
+      // check-then-act race.
+      const sessionStore = createInMemorySessionStore();
+      const serializeStart = createStartSerializer();
+      const restClient = fakeRestClient();
+      const adapter = fakeOpencodeAdapter();
+      const d = deps({ sessionStore, restClient, serializeStart, harnesses: { opencode: adapter } });
+
+      const [replyA, replyB] = await Promise.all([
+        runStart(['opencode', '/home/jon/project-a'], d),
+        runStart(['opencode', '/home/jon/project-b'], d),
+      ]);
+
+      // Without serialization, both calls would see `listSessions()` return
+      // `[]` (neither has called `addSession` yet) and both would proceed --
+      // exactly the bug this test guards against.
+      expect(sessionStore.listSessions()).toHaveLength(1);
+      expect(adapter.start).toHaveBeenCalledTimes(1);
+      const replies = [replyA, replyB];
+      expect(replies.filter((reply) => /already running/i.test(reply))).toHaveLength(1);
+      expect(replies.filter((reply) => /^Started/.test(reply))).toHaveLength(1);
     });
   });
 

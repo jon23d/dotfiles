@@ -3,6 +3,7 @@ import { createHarnessRegistry } from './harnessRegistry.js';
 import { decideReply } from './messageRouter.js';
 import { resolveRoutingContext } from './resolveDmChannel.js';
 import { createSessionRuntimeRegistry } from './sessionRuntime.js';
+import { createStartSerializer } from './startCommand.js';
 import { createMattermostSocketClient } from './socketClient.js';
 import type { HarnessAdapter } from './harness.js';
 import type { KnownHarnessName } from './harnessRegistry.js';
@@ -10,6 +11,7 @@ import type { Logger } from './logger.js';
 import type { MattermostRestClient } from './mattermostRestClient.js';
 import type { RouterDeps } from './messageRouter.js';
 import type { SessionRuntimeRegistry } from './sessionRuntime.js';
+import type { StartSerializer } from './startCommand.js';
 import type { SessionStore } from './sessionStore.js';
 import type { MattermostSocketClient, MattermostSocketClientConfig } from './socketClient.js';
 import type { StateStore } from './stateStore.js';
@@ -37,6 +39,15 @@ export interface DaemonConfig {
   allocateSessionNumber?: () => Promise<number>;
   /** The VM's hostname, used in `start`'s `#<n> : <hostName>` identifier. Defaults to `os.hostname()`. */
   hostname?: string;
+  /**
+   * Serializes concurrent `start` invocations end-to-end (review kan8-1 F1)
+   * so two racing `start` posts can't both observe "nothing running" before
+   * either registers its session. Defaults to a fresh in-process queue, the
+   * same way `sessionRuntime` defaults to a fresh in-memory registry -- like
+   * that state, this only needs to live in-process for the daemon's
+   * lifetime, not persist across restarts.
+   */
+  serializeStart?: StartSerializer;
 }
 
 function defaultAllocateSessionNumber(): () => Promise<number> {
@@ -67,6 +78,7 @@ export function createDaemon(config: DaemonConfig): Daemon {
     harnesses = createHarnessRegistry(),
     allocateSessionNumber = defaultAllocateSessionNumber(),
     hostname = osHostname(),
+    serializeStart = createStartSerializer(),
   } = config;
 
   let context: RoutingContext | undefined;
@@ -220,6 +232,7 @@ export function createDaemon(config: DaemonConfig): Daemon {
         logger,
         hostname,
         operatorUserId: context.operatorUserId,
+        serializeStart,
       };
 
       socketClient = createSocketClient({
