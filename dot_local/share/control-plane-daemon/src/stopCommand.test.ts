@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { renderSessionList } from './listCommand.js';
+import { createInMemorySessionStore } from './sessionStore.js';
 import { runStop } from './stopCommand.js';
 import type { StopDeps } from './stopCommand.js';
 import type { HarnessSessionHandle } from './harness.js';
@@ -147,5 +149,39 @@ describe('runStop', () => {
     expect(sessionStore.markStopped).toHaveBeenCalledWith('sess-1');
     expect(reply).toMatch(/internal error/i);
     expect(reply).toContain('#4 : devsix');
+  });
+
+  describe('AC1 end-to-end: a real SessionStore, not a spy', () => {
+    it('terminates the process and `list` reflects the session as stopped (review kan6-1 F1)', async () => {
+      // Unlike every other test in this file, this one drives `runStop`
+      // through a real `createInMemorySessionStore()` instance -- the same
+      // store `list` reads from -- rather than a mocked `markStopped` spy,
+      // so KAN-6's AC1 ("the underlying process is terminated and `list`
+      // reflects it as stopped") is actually demonstrated, not just inferred
+      // from `runStop` calling `markStopped` and `markStopped`/`list` each
+      // being independently well-tested elsewhere.
+      const store = createInMemorySessionStore();
+      store.addSession({
+        id: 'sess-1',
+        identifier: '#4 : devsix',
+        host: 'devsix',
+        status: 'running',
+        harness: 'opencode',
+        folder: '/home/jon/project',
+        channelId: 'chan-4',
+      });
+      const handle = fakeHandle();
+      const sessionRuntime = fakeSessionRuntime({ get: vi.fn().mockReturnValue(handle) });
+
+      expect(renderSessionList(store.listSessions())).toContain('running');
+
+      const reply = await runStop(['#4', ':', 'devsix'], deps({ sessionStore: store, sessionRuntime }));
+
+      expect(reply).toContain('Stopped `#4 : devsix`.');
+      expect(handle.stop).toHaveBeenCalled();
+      const listAfter = renderSessionList(store.listSessions());
+      expect(listAfter).toContain('#4 : devsix');
+      expect(listAfter).toMatch(/#4 : devsix` - stopped/);
+    });
   });
 });

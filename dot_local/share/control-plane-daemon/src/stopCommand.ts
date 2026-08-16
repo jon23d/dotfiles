@@ -38,6 +38,16 @@ const USAGE = 'Usage: `stop <identifier>`\nExample: `stop #4 : devsix`';
  * finds the session already `stopped` and treats the exit as expected,
  * instead of posting a false "crashed unexpectedly" notice for a stop the
  * operator asked for themselves.
+ *
+ * Review note (kan6-1 F2): for opencode -- the only harness implemented
+ * today -- that startCommand.ts guard is currently defensive/unreachable in
+ * production rather than a fix for a bug that ever actually fired.
+ * opencodeHarness.ts's `stop()` only does a `DELETE /session/:id` against
+ * the shared `opencode serve` process; it never fires that individual
+ * session's `onExit` callback (only the shared process's own death does,
+ * which is unrelated to a single session's `stop()`). The ordering here
+ * still matters and is still correct -- and becomes load-bearing the moment
+ * a harness's `stop()` does fire `onExit` for the session it stopped.
  */
 export async function runStop(args: string[], deps: StopDeps): Promise<string> {
   const target = args.join(' ').trim();

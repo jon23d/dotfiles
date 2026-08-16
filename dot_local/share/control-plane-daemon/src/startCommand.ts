@@ -191,6 +191,19 @@ export async function runStart(args: string[], deps: StartDeps): Promise<string>
     // captured in this closure) means this also correctly recognizes a stop
     // that happened at any point before this fires, not just one that
     // happens to race a specific flag.
+    //
+    // Review note (kan6-1 F2): for opencode -- the only harness implemented
+    // today -- this branch is currently unreachable in production, not a fix
+    // for a bug that was ever live there. opencodeHarness.ts's `stop()` only
+    // issues a `DELETE /session/:id` against the shared `opencode serve`
+    // process; it never calls `notifyExit`/fires `exitCallbacks` for that
+    // one session. This handle's `onExit` only ever fires when the *whole
+    // shared process* dies (see opencodeHarness.ts's `child.on('exit', ...)`
+    // -> `notifyExit`), which has nothing to do with a single session's
+    // `stop()`. So today, an operator `stop` on an opencode session never
+    // triggers this callback at all -- this guard is purely forward-looking
+    // (a future harness, or a change to opencode's own `stop()`) rather than
+    // closing a gap that currently fires.
     const current = deps.sessionStore.findByChannelId(channelId);
     if (current !== undefined && current.status === 'stopped') {
       deps.logger.info('harness session exited after an operator-initiated stop -- no crash notice needed', {
