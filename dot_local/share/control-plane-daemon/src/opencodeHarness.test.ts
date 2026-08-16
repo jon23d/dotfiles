@@ -180,9 +180,15 @@ describe('createOpencodeHarness', () => {
         new RegExp(ORCHESTRATOR_AGENT_NAME),
       );
       expect(createSessionHandler).not.toHaveBeenCalled();
+      // The shared `opencode serve` child was already spawned and passed its health check by
+      // the time verification fails -- it must be killed here or it leaks as an orphaned
+      // process holding its port, since nothing else keeps a reference to it once
+      // `ensureSharedServer`'s catch clears `sharedPromise` (review kan9-1 F1). Matches the
+      // assertion the pre-existing ready-timeout test makes for the same reason.
+      expect(child.kill).toHaveBeenCalled();
     });
 
-    it('rejects loudly when GET /agent cannot be reached at all', async () => {
+    it('rejects loudly and kills the shared child when GET /agent responds with a server error', async () => {
       const child = fakeChildProcess();
       const spawnProcess = vi.fn().mockReturnValue(child);
       const createSessionHandler = vi.fn(() => HttpResponse.json({ id: 'ses_abc123' }));
@@ -195,6 +201,27 @@ describe('createOpencodeHarness', () => {
 
       await expect(harness.start({ folder: dir, logger: silentLogger() })).rejects.toThrow(/agent/i);
       expect(createSessionHandler).not.toHaveBeenCalled();
+      expect(child.kill).toHaveBeenCalled();
+    });
+
+    it('rejects loudly and kills the shared child when GET /agent is genuinely unreachable (network failure, not just a bad status)', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const createSessionHandler = vi.fn(() => HttpResponse.json({ id: 'ses_abc123' }));
+      server.use(
+        healthyHandler(),
+        // Distinct from the 500-response test above: this makes the `fetchImpl` call itself
+        // reject (simulating connection refused/DNS failure/etc.), exercising
+        // `verifyOrchestratorAgentAvailable`'s `catch` block around the fetch, not its
+        // `!res.ok` branch (review kan9-1 F2).
+        http.get(`${BASE_URL}/agent`, () => HttpResponse.error()),
+        http.post(`${BASE_URL}/session`, createSessionHandler),
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+
+      await expect(harness.start({ folder: dir, logger: silentLogger() })).rejects.toThrow(/unreachable/i);
+      expect(createSessionHandler).not.toHaveBeenCalled();
+      expect(child.kill).toHaveBeenCalled();
     });
   });
 

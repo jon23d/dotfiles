@@ -344,7 +344,16 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
 
     logger.info('shared opencode serve process is ready', { port });
 
-    await verifyOrchestratorAgentAvailable(baseUrl, fetchImpl);
+    try {
+      await verifyOrchestratorAgentAvailable(baseUrl, fetchImpl);
+    } catch (cause) {
+      // Same as the ready-timeout branch above -- a failure here means this harness will
+      // never use this child (ensureSharedServer's catch clears `sharedPromise` on any
+      // rejection, so nothing else keeps a reference to it), so it must be killed here or
+      // it leaks as an orphaned process holding `port` (review kan9-1 F1).
+      child.kill();
+      throw cause;
+    }
     logger.info(`confirmed opencode has the "${ORCHESTRATOR_AGENT_NAME}" agent available`, { port });
 
     return server;
