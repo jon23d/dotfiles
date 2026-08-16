@@ -211,17 +211,19 @@ build step consumes. Fix those.
    ticket exists, else `{slug}`.
 3. `git remote get-url origin`. If it fails, stop and ask.
 4. If a ticket was referenced, read it. If you can't, stop and tell the user.
-5. Check assignment. If the ticket already belongs to someone — including the
+5. If the ticket does not have specific acceptance criteria, stop and use the
+   `writing-tickets` skill to complete the ticket first.
+6. Check assignment. If the ticket already belongs to someone — including the
    user — stop and report who. Resume only if it's unassigned or the user
    explicitly confirms a takeover. Never reassign someone else's ticket to
    yourself unasked.
-6. Confirm the repo's gate command is declared.
-7. Present: your understanding in 2–4 sentences, the delegation plan (what work,
+7. Confirm the repo's gate command is declared.
+8. Present: your understanding in 2–4 sentences, the delegation plan (what work,
    which skills, in what order), and every ambiguity with your recommended
    resolution. Form the understanding from the ticket, working-memory, and repo
    metadata only — it may be provisional; Phase 2's planning pass resolves the
    code-level detail. Do not open source files to sharpen it.
-8. **Wait for approval.**
+9. **Wait for approval.**
 
 ---
 
@@ -292,7 +294,9 @@ reviewer reads the working tree, but only commits get pushed.
 After the slices are implemented and committed, hand the work back to the user
 for signoff **before** running the full gate or opening the PR:
 
-1. Report what changed and ask the user to verify (UAT).
+1. Report what changed and ask the user to verify (UAT). Give them a brief overview
+   of how they should test. Don't spend a lot of tokens coming up with this. If the
+   outlined process is insufficient, the operator will ask for more detail.
 2. On their feedback, re-enter Phase 4 with the feedback as context — the
    implementer revises and commits. Use **fast per-slice checks only**
    (`pnpm --filter <app> test` / `typecheck` / `lint`, prettier), *never* the
@@ -312,10 +316,12 @@ so and re-scope with the user rather than absorbing it silently.
 
 1. Confirm the tree is clean, then run the full gate. Failure → back to the
    implementer with the output.
-2. Green → delegate a read-only review. Required: `code-review`, plus
+2. Green → delegate a review. Required: `code-review`, plus
    `qa-verification` if endpoints changed. Pass the diff and the plan.
    The reviewer writes its findings to `.agent/review-{slice}-{round}.json` and
-   returns only that path and the count at each severity.
+   returns only that path and the count at each severity. The subagent **MUST**
+   have write capabilities, or it will not be able to persist its review.
+   Do not delegate the review to a read-only agent.
 3. Any critical or major finding → re-delegate to the implementer with the
    **path**, not the contents. Do not open the file yourself; the counts are all
    you need to decide. The implementer marks each finding `addressed` or
