@@ -54,6 +54,7 @@ function fakeHandle(overrides: Partial<HarnessSessionHandle> = {}): HarnessSessi
     stop: vi.fn(),
     onExit: vi.fn(),
     onRename: vi.fn(),
+    provisionChannelId: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -165,9 +166,14 @@ describe('runStart', () => {
 
     const reply = await runStart(['opencode', '/home/jon/project'], d);
 
-    expect(adapter.start).toHaveBeenCalledWith(expect.objectContaining({ folder: '/home/jon/project' }));
+    expect(adapter.start).toHaveBeenCalledWith(
+      expect.objectContaining({ folder: '/home/jon/project', operatorUserId: 'jon-1' }),
+    );
     expect(restClient.createPrivateChannel).toHaveBeenCalledWith('team-1', expect.stringContaining('4'), '#4 : devsix');
     expect(restClient.addChannelMember).toHaveBeenCalledWith('new-channel-id', 'jon-1');
+    // KAN-10: the harness session must be told its own channel id -- never
+    // left to resolve or guess it -- only once that channel actually exists.
+    expect(handle.provisionChannelId).toHaveBeenCalledWith('new-channel-id');
     expect(sessionStore.addSession).toHaveBeenCalledWith(
       expect.objectContaining({
         identifier: '#4 : devsix',
@@ -323,6 +329,30 @@ describe('runStart', () => {
     // accurate story.
     expect(reply).not.toMatch(/could not be created/i);
     expect(reply).toMatch(/forbidden/);
+    // Never reached: addChannelMember already failed, so the session must
+    // never be told a channel id for a channel it was never actually added to.
+    expect(handle.provisionChannelId).not.toHaveBeenCalled();
+  });
+
+  it('when telling the harness session its own channel id fails, stops the session, archives the orphaned channel, and registers nothing (KAN-10 AC4: never a silent fallback)', async () => {
+    const handle = fakeHandle({ provisionChannelId: vi.fn().mockRejectedValue(new Error('disk full')) });
+    const adapter = fakeOpencodeAdapter({ start: vi.fn().mockResolvedValue(handle) });
+    const restClient = fakeRestClient();
+    const sessionStore = fakeSessionStore();
+    const sessionRuntime = fakeSessionRuntime();
+    const d = deps({ restClient, sessionStore, sessionRuntime, harnesses: { opencode: adapter } });
+
+    const reply = await runStart(['opencode', '/home/jon/project'], d);
+
+    expect(handle.provisionChannelId).toHaveBeenCalledWith('new-channel-id');
+    expect(reply).toMatch(/channel/i);
+    expect(handle.stop).toHaveBeenCalled();
+    expect(sessionStore.addSession).not.toHaveBeenCalled();
+    expect(sessionRuntime.register).not.toHaveBeenCalled();
+    // The channel WAS created (only telling the session its id failed) -- it
+    // must be cleaned up, not left as an invisible orphan.
+    expect(restClient.archiveChannel).toHaveBeenCalledWith('new-channel-id');
+    expect(reply).toMatch(/disk full/);
   });
 
   it('when channel creation itself fails, does not attempt to archive anything (there is no channel to clean up)', async () => {

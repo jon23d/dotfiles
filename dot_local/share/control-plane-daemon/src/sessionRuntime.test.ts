@@ -8,6 +8,7 @@ function fakeHandle(overrides: Partial<HarnessSessionHandle> = {}): HarnessSessi
     stop: vi.fn(),
     onExit: vi.fn(),
     onRename: vi.fn(),
+    provisionChannelId: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }

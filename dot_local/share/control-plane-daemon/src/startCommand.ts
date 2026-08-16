@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { KNOWN_HARNESS_NAMES } from './harnessRegistry.js';
 import { stripBackticks } from './markdown.js';
-import type { HarnessAdapter } from './harness.js';
+import type { HarnessAdapter, HarnessSessionHandle } from './harness.js';
 import type { KnownHarnessName } from './harnessRegistry.js';
 import type { Logger } from './logger.js';
 import type { MattermostRestClient } from './mattermostRestClient.js';
@@ -85,6 +85,40 @@ function isKnownHarnessName(name: string): name is KnownHarnessName {
 }
 
 const FORCE_FLAG = '--force';
+
+/**
+ * Shared cleanup for a setup-step failure that happens after the channel
+ * already exists but before the session is fully wired up (KAN-5
+ * `addChannelMember`, KAN-10 `provisionChannelId`): stops the harness
+ * session and best-effort archives the now-orphaned channel, since nothing
+ * in SessionStore will ever reference it otherwise. Returns whether the
+ * archive itself succeeded, so the caller's reply to the operator can report
+ * honestly (review kan5-2 F5: claiming a cleanup that didn't actually happen
+ * is its own distinct defect).
+ */
+async function stopAndArchiveOrphanedChannel(
+  deps: Pick<StartDeps, 'restClient' | 'logger'>,
+  handle: HarnessSessionHandle,
+  channelId: string,
+): Promise<boolean> {
+  handle.stop();
+  try {
+    await deps.restClient.archiveChannel(channelId);
+    return true;
+  } catch (archiveErr) {
+    deps.logger.error('failed to archive the orphaned session channel (best-effort cleanup)', {
+      err: archiveErr,
+      channelId,
+    });
+    return false;
+  }
+}
+
+function cleanupNoteFor(archived: boolean): string {
+  return archived
+    ? 'The session has been stopped and the channel has been cleaned up.'
+    : 'The session has been stopped, but the channel could not be automatically cleaned up and will need manual removal.';
+}
 
 /**
  * Builds the KAN-8 refusal reply naming every currently-running session's
@@ -202,7 +236,7 @@ async function attemptStart(args: string[], force: boolean, deps: StartDeps): Pr
 
   let handle;
   try {
-    handle = await adapter.start({ folder, logger: deps.logger });
+    handle = await adapter.start({ folder, operatorUserId: deps.operatorUserId, logger: deps.logger });
   } catch (err) {
     deps.logger.error('failed to start harness session', { err, harness: harnessName, folder, identifier });
     return `Could not start a \`${harnessName}\` session in \`${stripBackticks(folder)}\`: ${errMessage(err)}`;
@@ -236,7 +270,6 @@ async function attemptStart(args: string[], force: boolean, deps: StartDeps): Pr
       'failed to add the operator to the new session channel -- stopping the session and archiving the now-orphaned channel',
       { err, identifier, channelId },
     );
-    handle.stop();
     // Best-effort cleanup: the channel may still be left behind if this
     // itself fails (a human will need to archive it manually), but that
     // failure must never mask the real, original `addChannelMember` error
@@ -246,20 +279,26 @@ async function attemptStart(args: string[], force: boolean, deps: StartDeps): Pr
     // was itself false whenever this catch fired, the same category of
     // "operator told something false about an orphaned resource" defect
     // the addChannelMember branch above exists to avoid).
-    let archived = true;
-    try {
-      await deps.restClient.archiveChannel(channelId);
-    } catch (archiveErr) {
-      archived = false;
-      deps.logger.error('failed to archive the orphaned session channel (best-effort cleanup)', {
-        err: archiveErr,
-        channelId,
-      });
-    }
-    const cleanupNote = archived
-      ? 'The session has been stopped and the channel has been cleaned up.'
-      : 'The session has been stopped, but the channel could not be automatically cleaned up and will need manual removal.';
-    return `Session and its channel \`${identifier}\` were created, but adding you to the channel failed (${errMessage(err)}). ${cleanupNote}`;
+    const archived = await stopAndArchiveOrphanedChannel(deps, handle, channelId);
+    return `Session and its channel \`${identifier}\` were created, but adding you to the channel failed (${errMessage(err)}). ${cleanupNoteFor(archived)}`;
+  }
+
+  // KAN-10: the in-session agent must never have to independently resolve or
+  // create its own channel -- so the daemon tells it directly, once the
+  // channel actually exists (it can't be told any earlier: `channelId` isn't
+  // known until `createPrivateChannel` above returns). Same
+  // failure posture as `addChannelMember` immediately above: this is a
+  // setup-step failure, not something to leave half-done, so it stops the
+  // session and archives the channel exactly the same way.
+  try {
+    await handle.provisionChannelId(channelId);
+  } catch (err) {
+    deps.logger.error(
+      'failed to tell the harness session its own channel id -- stopping the session and archiving the now-orphaned channel',
+      { err, identifier, channelId },
+    );
+    const archived = await stopAndArchiveOrphanedChannel(deps, handle, channelId);
+    return `Session and its channel \`${identifier}\` were created, but the session could not be told its own channel id (${errMessage(err)}). ${cleanupNoteFor(archived)}`;
   }
 
   const session: Session = {

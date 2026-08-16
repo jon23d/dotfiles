@@ -1,6 +1,7 @@
 import { spawn as nodeSpawn } from 'node:child_process';
-import { stat } from 'node:fs/promises';
+import { stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { join } from 'node:path';
 import { z } from 'zod';
 import type { HarnessAdapter, HarnessSessionHandle } from './harness.js';
 import type { Logger } from './logger.js';
@@ -55,6 +56,66 @@ export interface OpencodeHarnessConfig {
  * variant to track.
  */
 export const CONTROL_PLANE_DAEMON_ENV_VAR = 'CONTROL_PLANE_DAEMON';
+
+/**
+ * Who the operator is (KAN-10), delivered the exact same way as
+ * `CONTROL_PLANE_DAEMON_ENV_VAR` above and for the same reason: the operator
+ * is genuinely process-wide (one operator per VM, per this whole epic's
+ * design -- see startCommand.ts's `StartDeps.operatorUserId`, resolved once
+ * at daemon startup by resolveDmChannel.ts), so it fits the shared-process
+ * env var pattern with no per-session complication. Set once, at spawn --
+ * every session on this shared server sees the same operator by
+ * construction, so there is no per-session variant to track (identical
+ * reasoning to `CONTROL_PLANE_DAEMON_ENV_VAR`'s own doc comment).
+ */
+export const MATTERMOST_OPERATOR_USER_ID_ENV_VAR = 'MATTERMOST_OPERATOR_USER_ID';
+
+/**
+ * The key an in-session agent finds its own session's Mattermost channel id
+ * under (KAN-10), once it sources `SESSION_ENV_FILE_NAME` from its own
+ * working directory. NOT a process env var like the two constants above --
+ * deliberately can't be, since a session's channel id is inherently
+ * per-session while every session on this harness shares one `opencode
+ * serve` process (KAN-5). See `provisionChannelId`'s doc comment on
+ * `HarnessSessionHandle` (harness.ts) for the full investigation: opencode's
+ * `POST /session` and `POST /session/:id/prompt_async` request schemas (live
+ * -checked via a real server's `GET /doc`, opencode 1.18.18) have no `env`
+ * field anywhere, and the `Session` response schema has no `env` property
+ * either -- only an arbitrary `metadata` bag that's retrievable via the API,
+ * not injected into the bash tool's subprocess env. A live round-trip
+ * against that same server confirmed the bash tool's cwd is exactly the
+ * session's own `directory`, and that a file placed there beforehand is
+ * readable from a relative path -- so this uses that instead, needing no
+ * opencode cooperation at all.
+ */
+export const MATTERMOST_SESSION_CHANNEL_ID_ENV_VAR = 'MATTERMOST_SESSION_CHANNEL_ID';
+
+/**
+ * Filename `provisionChannelId` writes into a session's own folder (KAN-10).
+ * Hidden (dot-prefixed) so it doesn't clutter a directory listing of the
+ * project the agent is actually working in. Shell-sourceable
+ * (`export KEY='value'` lines) rather than a bare value or JSON, since each
+ * bash-tool invocation is its own fresh subprocess (proven by
+ * `CONTROL_PLANE_DAEMON_ENV_VAR` needing to live on the *parent* process's
+ * env in the first place, rather than being exportable once and persisting
+ * across calls) -- `source`-ing this file is a one-line, well-known,
+ * zero-guesswork way for the agent to load these values into whichever
+ * shell invocation actually needs them.
+ */
+export const SESSION_ENV_FILE_NAME = '.control-plane-session-env';
+
+/**
+ * Single-quotes `value` for safe embedding in a POSIX shell `export`
+ * statement, escaping any embedded single quote the standard way
+ * (`'...'\''...'`) -- the same defensive posture as startCommand.ts's
+ * `stripBackticks` for backtick-quoted spans (kan7-1 F1 and friends): a
+ * channel id is Mattermost-controlled, not something this daemon should
+ * ever trust blindly when writing it into a file another process will
+ * `source`.
+ */
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, String.raw`'\''`)}'`;
+}
 
 /**
  * The identifier opencode's `agent` fields need to select the orchestrator
@@ -294,12 +355,12 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     for (const cb of server.exitCallbacks.splice(0)) cb({ code });
   }
 
-  async function spawnSharedServer(logger: Logger): Promise<SharedServer> {
+  async function spawnSharedServer(logger: Logger, operatorUserId: string): Promise<SharedServer> {
     const port = await pickPort();
     const baseUrl = `http://127.0.0.1:${port}`;
     const child = spawnProcess('opencode', ['serve', '--port', String(port), '--hostname', '127.0.0.1'], {
       cwd: process.cwd(),
-      env: { [CONTROL_PLANE_DAEMON_ENV_VAR]: '1' },
+      env: { [CONTROL_PLANE_DAEMON_ENV_VAR]: '1', [MATTERMOST_OPERATOR_USER_ID_ENV_VAR]: operatorUserId },
     });
 
     const server: SharedServer = {
@@ -359,9 +420,9 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     return server;
   }
 
-  async function ensureSharedServer(logger: Logger): Promise<SharedServer> {
+  async function ensureSharedServer(logger: Logger, operatorUserId: string): Promise<SharedServer> {
     if (!sharedPromise) {
-      sharedPromise = spawnSharedServer(logger);
+      sharedPromise = spawnSharedServer(logger, operatorUserId);
     }
     const attempted = sharedPromise;
 
@@ -383,9 +444,9 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
       // the staleness converges on the same fresh attempt instead of
       // triggering its own.
       if (sharedPromise === attempted) {
-        sharedPromise = spawnSharedServer(logger);
+        sharedPromise = spawnSharedServer(logger, operatorUserId);
       }
-      return ensureSharedServer(logger);
+      return ensureSharedServer(logger, operatorUserId);
     }
 
     return server;
@@ -477,9 +538,9 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
   return {
     name: 'opencode',
 
-    async start({ folder, logger }) {
+    async start({ folder, operatorUserId, logger }) {
       await validateFolder(folder);
-      const server = await ensureSharedServer(logger);
+      const server = await ensureSharedServer(logger, operatorUserId);
       const { id: sessionId, title: initialTitle } = await createSession(server, folder);
       server.renameState.set(sessionId, { lastTitle: initialTitle, callbacks: [] });
 
@@ -526,6 +587,22 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
         onRename(callback) {
           server.renameState.get(sessionId)?.callbacks.push(callback);
           ensureEventStream(server, logger);
+        },
+
+        async provisionChannelId(channelId) {
+          const filePath = join(folder, SESSION_ENV_FILE_NAME);
+          const contents =
+            `# Auto-generated by control-plane-daemon (KAN-10) -- \`source\` this file to load\n` +
+            `# this session's own values into your shell.\n` +
+            `export ${MATTERMOST_SESSION_CHANNEL_ID_ENV_VAR}=${shellSingleQuote(channelId)}\n`;
+          try {
+            await writeFile(filePath, contents, 'utf8');
+          } catch (cause) {
+            throw new Error(
+              `failed to write this session's channel id into ${filePath}: ${cause instanceof Error ? cause.message : String(cause)}`,
+              { cause },
+            );
+          }
         },
       };
 
