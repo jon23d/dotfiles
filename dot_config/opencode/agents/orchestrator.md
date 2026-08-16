@@ -257,6 +257,14 @@ Then, per `project-management`: assign the ticket to yourself, set `Agent VM` to
 
 Any failure except the comment stops the run.
 
+**Session identity (KAN-7).** If this session was started by the control-plane
+daemon rather than a plain interactive one, set your own opencode session
+title to `{TICKET-ID}` now via `PATCH /session/:id` with
+`{"title": "<identifier>"}` — the daemon watches for this and renames the
+session's Mattermost channel to match. Do this again if your work identity
+changes later (a different ticket, a pivot). Skip it in a plain interactive
+session; nothing is watching for it there.
+
 ---
 
 ## Phase 4 — Implement
