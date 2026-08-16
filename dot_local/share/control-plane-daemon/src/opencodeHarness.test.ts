@@ -575,6 +575,95 @@ describe('createOpencodeHarness', () => {
     expect(child.kill).toHaveBeenCalled();
   });
 
+  describe('health-check poll attempt timeout (regression: live-diagnosed incident during KAN-12 verification)', () => {
+    /**
+     * Reproduces the live incident: a single `/global/health` `fetch()` call hung (in
+     * production, consistent with Node/undici's default fetch timeout, ~300s) instead of
+     * failing fast, and the loop's deadline was only ever checked *between* attempts -- so one
+     * hung call blew straight through the entire `readyTimeoutMs` budget while the underlying
+     * `opencode serve` process was, the whole time, genuinely healthy. This fake `fetchImpl`
+     * never resolves or rejects on its own, simulating exactly that hang; the fix must bound
+     * each individual attempt so the loop still gives up close to its own configured deadline.
+     */
+    it('gives up at approximately its own configured readyTimeoutMs when a health-check fetch hangs, instead of waiting on it indefinitely', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      // Never settles on its own -- exactly like the real hung `fetch()` call in the live
+      // incident, whose own signal (undici's default fetch timeout) took ~318s to fire. This
+      // fake only settles if something else (the fix under test) actually aborts its signal --
+      // a real, unfixed `fetch()` calls with no signal passed at all would never abort here,
+      // which is precisely why this test would hang without the fix.
+      const fetchImpl = vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+          }),
+      );
+      const readyTimeoutMs = 300;
+      const harness = createOpencodeHarness({
+        spawnProcess,
+        pickPort: async () => PORT,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        readyTimeoutMs,
+        readyPollIntervalMs: 10,
+      });
+
+      const startedAt = Date.now();
+      await expect(
+        harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() }),
+      ).rejects.toThrow(/ready|timed out/i);
+      const elapsedMs = Date.now() - startedAt;
+
+      // Generous upper bound (well under vitest's 5s default per-test timeout) -- the point is
+      // "close to readyTimeoutMs", not waiting on the hung call, which would never resolve at all.
+      expect(elapsedMs).toBeLessThan(2_000);
+      expect(child.kill).toHaveBeenCalled();
+    });
+
+    /**
+     * The distinction this incident showed was missing: a poll attempt that has to be aborted
+     * because it hung is a much more interesting signal than an ordinary connection-refused
+     * failure while the process is still booting -- a repeated abort-timeout in the logs would
+     * have made this exact incident diagnosable without live `curl` debugging. Simulates one
+     * hung attempt (aborted) followed by a normal healthy response, and asserts the abort is
+     * logged distinctly rather than being silently swallowed by the same blanket catch as a
+     * plain connection-refused.
+     */
+    it('logs distinctly when a poll attempt is aborted for hanging, then still succeeds once the server responds normally', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      server.use(healthyHandler(), agentAvailableHandler(), http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })));
+      let healthCallCount = 0;
+      const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+        const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+        if (href.endsWith('/global/health')) {
+          healthCallCount += 1;
+          if (healthCallCount === 1) {
+            // First attempt hangs until aborted -- never settles on its own.
+            return new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+            });
+          }
+        }
+        return fetch(url, init); // delegate to the real (MSW-intercepted) fetch for everything else
+      }) as typeof fetch;
+      const logger = silentLogger();
+      const harness = createOpencodeHarness({
+        spawnProcess,
+        pickPort: async () => PORT,
+        fetchImpl,
+        readyPollIntervalMs: 10,
+      });
+
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger });
+
+      expect(handle).toBeDefined();
+      expect(healthCallCount).toBeGreaterThanOrEqual(2);
+      // Distinct from the plain "keep polling" silence -- an abort-timeout is logged loudly.
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/abort|timed out|hung/i), expect.anything());
+    }, 10_000);
+  });
+
   describe('onRename (KAN-7)', () => {
     it('fires with the new title when opencode reports this session\'s title changed', async () => {
       const child = fakeChildProcess();

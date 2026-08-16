@@ -412,6 +412,31 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Upper bound on how long any *single* `/global/health` poll attempt inside `spawnSharedServer`
+ * is allowed to hang before it's aborted and the loop moves on to its next attempt. Fixes a
+ * live-diagnosed incident from KAN-12's own verification: a real, genuinely healthy `opencode
+ * serve` process (`curl .../global/health` kept responding in milliseconds throughout) got
+ * killed because one `fetchImpl()` call inside the readiness loop hung for ~318s -- consistent
+ * with Node/undici's default fetch timeouts (headersTimeout/bodyTimeout, 300_000ms) -- while the
+ * loop's own blanket `catch { keep polling }` silently absorbed it, having been written assuming
+ * every failure here is a fast connection-refused error, never a genuinely slow/hung request.
+ * The loop's `deadline` was (and still is) only checked *between* attempts, so nothing bounded
+ * that one call, and it blew straight through the intended `readyTimeoutMs` budget on its own.
+ *
+ * Real `opencode serve`, once actually listening, answers `/global/health` in about a second
+ * (live-verified) -- a couple of seconds is ample headroom for one live attempt while still
+ * failing far faster than undici's 300s default. This is deliberately a robustness bound
+ * *inside* `readyTimeoutMs`'s own budget, not a second, competing deadline: the call site below
+ * also clamps it to whatever's left of that budget, so a small `readyTimeoutMs` (as several
+ * existing tests use) still gives up close to its own configured value, never later.
+ */
+const HEALTH_CHECK_ATTEMPT_TIMEOUT_MS = 2_000;
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
+}
+
+/**
  * Per-session rename-detection state (KAN-7), keyed by opencode session id.
  * `lastTitle` seeds from the title opencode assigned at session creation
  * (its placeholder `New session - <timestamp>` default) so that placeholder
@@ -566,11 +591,27 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
             (stderrOutput.trim() ? `: ${stderrOutput.trim()}` : ''),
         );
       }
+      // Bound this one attempt so a hung/slow connection can't silently consume the loop's
+      // entire `readyTimeoutMs` budget (see HEALTH_CHECK_ATTEMPT_TIMEOUT_MS's doc comment) --
+      // clamped to whatever's left of that budget so this never waits *past* the loop's own
+      // deadline, only up to it.
+      const attemptTimeoutMs = Math.max(0, Math.min(HEALTH_CHECK_ATTEMPT_TIMEOUT_MS, deadline - Date.now()));
+      const attemptAbort = new AbortController();
+      const attemptTimer = setTimeout(() => attemptAbort.abort(), attemptTimeoutMs);
       try {
-        const res = await fetchImpl(`${baseUrl}/global/health`);
+        const res = await fetchImpl(`${baseUrl}/global/health`, { signal: attemptAbort.signal });
         if (res.ok) break;
-      } catch {
-        // Connection refused while the server is still booting -- expected, keep polling.
+      } catch (err) {
+        if (isAbortError(err)) {
+          // A repeated abort here is a much more interesting signal than a plain
+          // connection-refused -- it means a request was accepted/in-flight but didn't respond
+          // in time, exactly what the live incident this const's doc comment describes would
+          // have shown in the logs if this check had existed at the time. Loud, not swallowed.
+          logger.warn('opencode serve health check attempt timed out and was aborted -- retrying', { port, attemptTimeoutMs });
+        }
+        // Otherwise: connection refused while the server is still booting -- expected, keep polling.
+      } finally {
+        clearTimeout(attemptTimer);
       }
       if (Date.now() >= deadline) {
         child.kill();
