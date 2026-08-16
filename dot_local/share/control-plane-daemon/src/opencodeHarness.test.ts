@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createOpencodeHarness } from './opencodeHarness.js';
+import { CONTROL_PLANE_DAEMON_ENV_VAR, createOpencodeHarness } from './opencodeHarness.js';
 import type { SpawnedProcessLike } from './opencodeHarness.js';
 import type { Logger } from './logger.js';
 
@@ -126,6 +126,24 @@ describe('createOpencodeHarness', () => {
       expect.objectContaining({}),
     );
     expect(createdWithDirectory).toBe(dir);
+  });
+
+  it('spawns `opencode serve` with a distinguishing env var so an in-session agent can tell it is running under the daemon (kan7-2 F4)', async () => {
+    const child = fakeChildProcess();
+    const spawnProcess = vi.fn().mockReturnValue(child);
+    server.use(
+      healthyHandler(),
+      http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+    );
+    const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+
+    await harness.start({ folder: dir, logger: silentLogger() });
+
+    expect(spawnProcess).toHaveBeenCalledWith(
+      'opencode',
+      expect.any(Array),
+      expect.objectContaining({ env: expect.objectContaining({ [CONTROL_PLANE_DAEMON_ENV_VAR]: '1' }) }),
+    );
   });
 
   it('reuses the already-running shared server for a second session instead of spawning again', async () => {

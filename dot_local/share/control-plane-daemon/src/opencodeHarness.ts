@@ -35,7 +35,7 @@ export interface SpawnedProcessLike {
 }
 
 export interface OpencodeHarnessConfig {
-  spawnProcess?: (command: string, args: string[], options: { cwd: string }) => SpawnedProcessLike;
+  spawnProcess?: (command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => SpawnedProcessLike;
   pickPort?: () => Promise<number>;
   fetchImpl?: typeof fetch;
   /** How long to wait for `opencode serve` to report healthy before giving up. */
@@ -43,8 +43,25 @@ export interface OpencodeHarnessConfig {
   readyPollIntervalMs?: number;
 }
 
-function defaultSpawn(command: string, args: string[], options: { cwd: string }): SpawnedProcessLike {
-  return nodeSpawn(command, args, { cwd: options.cwd, stdio: ['ignore', 'ignore', 'pipe'] });
+/**
+ * Marks the shared `opencode serve` process (and every session running under
+ * it) as daemon-managed (KAN-7 review kan7-2 F4). Without this, nothing lets
+ * an in-session agent tell "am I running under the control-plane daemon or a
+ * plain interactive `opencode` session" -- orchestrator.md's rename-on-pickup
+ * instruction names this exact variable so the condition is actually
+ * checkable, not just described. Set once on the shared process, not
+ * per-session: every session this harness creates runs under it by
+ * construction (KAN-5's one-shared-process design), so there's no per-session
+ * variant to track.
+ */
+export const CONTROL_PLANE_DAEMON_ENV_VAR = 'CONTROL_PLANE_DAEMON';
+
+function defaultSpawn(command: string, args: string[], options: { cwd: string; env: Record<string, string> }): SpawnedProcessLike {
+  return nodeSpawn(command, args, {
+    cwd: options.cwd,
+    env: { ...process.env, ...options.env },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
 }
 
 function pickFreePort(): Promise<number> {
@@ -200,6 +217,7 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     const baseUrl = `http://127.0.0.1:${port}`;
     const child = spawnProcess('opencode', ['serve', '--port', String(port), '--hostname', '127.0.0.1'], {
       cwd: process.cwd(),
+      env: { [CONTROL_PLANE_DAEMON_ENV_VAR]: '1' },
     });
 
     const server: SharedServer = {
