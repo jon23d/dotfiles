@@ -319,9 +319,13 @@ so and re-scope with the user rather than absorbing it silently.
 2. Green → delegate a review. Required: `code-review`, plus
    `qa-verification` if endpoints changed. Pass the diff and the plan.
    The reviewer writes its findings to `.agent/review-{slice}-{round}.json` and
-   returns only that path and the count at each severity. The subagent **MUST**
-   have write capabilities, or it will not be able to persist its review.
-   Do not delegate the review to a read-only agent.
+   returns only that path and the count at each severity. Delegate to an agent
+   type with `Write`-tool access (e.g. `general-purpose`) — a strictly
+   tool-read-only agent type (e.g. `Explore`) cannot persist its findings file
+   at all, which silently drops the whole review. This is a tool-access
+   requirement, not a license to touch source: the `code-review` skill's own
+   rule still applies regardless of agent type — findings only, never edit
+   application/source code, not even a one-line fix.
 3. Any critical or major finding → re-delegate to the implementer with the
    **path**, not the contents. Do not open the file yourself; the counts are all
    you need to decide. The implementer marks each finding `addressed` or
