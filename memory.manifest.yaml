@@ -1,0 +1,40 @@
+# memory.manifest.yaml — lives at the repo root of each service.
+#
+# Purpose: declares this repo's memory scope and its dependencies/edges so the
+# agent's READ scope is DECLARED, not guessed. The `dependencies` and `edges`
+# lists below are also the canonical-name menu: the agent files cross-cutting
+# facts by picking from these, and must not invent new names.
+#
+# PROVISIONAL — first-ever bootstrap of this repo into shared memory (KAN-7,
+# 2026-08-16). Flag for human review: `dotfiles` is a general dotfiles repo,
+# but the only part with meaningful cross-session memory so far is the
+# control-plane-daemon under dot_local/share/control-plane-daemon (the
+# Mattermost <-> opencode session-orchestration daemon for the KAN-1 epic).
+# Scoped `project` to that daemon rather than the repo as a whole because
+# that's the unit of work every KAN ticket touches; reconsider if unrelated
+# dotfiles work ever needs its own memory scope.
+
+domain: harness                          # innkeeper | harness — hard boundary
+project: project/control-plane-daemon    # this repo's own scope
+
+# Shared dependencies this service touches. Names here are canonical — they map
+# 1:1 to dep/<name> notes in the memory store. Add a dep here BEFORE writing a
+# fact about it, so naming stays consistent across projects.
+dependencies:
+  - dep/opencode      # opencode CLI/server harness (SSE /event, session API) that runs each session
+  - dep/mattermost     # Mattermost REST API (channels, posts) used as the operator/agent chat surface
+
+# Service-to-service seams this repo participates in. Canonical, undirected;
+# name alphabetically so edge/portal--api == edge/api--portal.
+edges: []
+
+# Cross-cutting scopes always loaded on top of the above. Keep the global tier
+# thin — infra/tooling only.
+always_load:
+  - harness/global     # org-wide harness-domain invariants (rare)
+  - global/infra        # gitea, doks, litellm — cross-domain infra
+
+# Resolved READ scope for any ticket in this repo is the union of:
+#   project + dependencies + edges + always_load
+# The agent loads exactly this set and no more. Do not widen at runtime;
+# add scopes here if a new dependency is introduced.

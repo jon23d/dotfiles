@@ -27,6 +27,15 @@ export interface MattermostRestClient {
    * that was created but couldn't be fully set up (e.g. the operator
    * couldn't be added to it), so it doesn't leak as an invisible orphan. */
   archiveChannel(channelId: string): Promise<void>;
+  /**
+   * Renames a channel's slug (`name`) and human-facing `display_name`
+   * (KAN-7: the agent renaming its own session chat once it knows a
+   * concrete work identity). Throws on any failure -- including the name
+   * colliding with another channel's slug, which Mattermost rejects
+   * server-side -- so the caller can surface it rather than silently
+   * leaving the old name in place.
+   */
+  renameChannel(channelId: string, name: string, displayName: string): Promise<void>;
 }
 
 export interface MattermostRestClientConfig {
@@ -173,6 +182,14 @@ export function createMattermostRestClient(config: MattermostRestClientConfig): 
 
     async archiveChannel(channelId) {
       await request('DELETE', `/api/v4/channels/${encodeURIComponent(channelId)}`);
+    },
+
+    async renameChannel(channelId, name, displayName) {
+      await request('PUT', `/api/v4/channels/${encodeURIComponent(channelId)}`, {
+        id: channelId,
+        name,
+        display_name: displayName,
+      });
     },
   };
 }

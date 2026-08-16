@@ -119,4 +119,51 @@ describe('createInMemorySessionStore', () => {
       expect(() => store.markStopped('does-not-exist')).not.toThrow();
     });
   });
+
+  describe('renameSession', () => {
+    it('replaces a session\'s identifier, visible via listSessions (KAN-7)', () => {
+      const store = createInMemorySessionStore();
+      store.addSession({
+        id: 'sess-1',
+        identifier: '#1 : dev-vm',
+        host: 'dev-vm',
+        status: 'running',
+        harness: 'opencode',
+        folder: '/home/jon/project',
+        channelId: 'chan-1',
+      });
+
+      store.renameSession('sess-1', 'KAN-4 : dev-vm');
+
+      expect(store.listSessions()).toEqual([
+        expect.objectContaining({ id: 'sess-1', identifier: 'KAN-4 : dev-vm' }),
+      ]);
+    });
+
+    it('supports being renamed more than once (AC2: work identity can change again)', () => {
+      const store = createInMemorySessionStore();
+      store.addSession({
+        id: 'sess-1',
+        identifier: '#1 : dev-vm',
+        host: 'dev-vm',
+        status: 'running',
+        harness: 'opencode',
+        folder: '/home/jon/project',
+        channelId: 'chan-1',
+      });
+
+      store.renameSession('sess-1', 'KAN-4 : dev-vm');
+      store.renameSession('sess-1', 'KAN-9 : dev-vm');
+
+      expect(store.listSessions()).toEqual([
+        expect.objectContaining({ id: 'sess-1', identifier: 'KAN-9 : dev-vm' }),
+      ]);
+    });
+
+    it('is a no-op (not a throw) for an unknown session id', () => {
+      const store = createInMemorySessionStore();
+
+      expect(() => store.renameSession('does-not-exist', 'KAN-4 : dev-vm')).not.toThrow();
+    });
+  });
 });

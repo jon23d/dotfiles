@@ -36,6 +36,7 @@ function fakeSessionStore(sessions: Session[] = []): SessionStore {
     addSession: vi.fn(),
     findByChannelId: vi.fn().mockReturnValue(undefined),
     markStopped: vi.fn(),
+    renameSession: vi.fn(),
   };
 }
 
@@ -50,6 +51,7 @@ function fakeRestClient(overrides: Partial<MattermostRestClient> = {}): Mattermo
     createPrivateChannel: vi.fn().mockResolvedValue('new-channel-id'),
     addChannelMember: vi.fn().mockResolvedValue(undefined),
     archiveChannel: vi.fn().mockResolvedValue(undefined),
+    renameChannel: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -68,6 +70,7 @@ function fakeHandle(overrides: Partial<HarnessSessionHandle> = {}): HarnessSessi
     sendPrompt: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn(),
     onExit: vi.fn(),
+    onRename: vi.fn(),
     ...overrides,
   };
 }

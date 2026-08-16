@@ -13,6 +13,7 @@ function fakeClient(overrides: Partial<MattermostRestClient> = {}): MattermostRe
     createPrivateChannel: vi.fn().mockResolvedValue('new-channel-id'),
     addChannelMember: vi.fn().mockResolvedValue(undefined),
     archiveChannel: vi.fn().mockResolvedValue(undefined),
+    renameChannel: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }

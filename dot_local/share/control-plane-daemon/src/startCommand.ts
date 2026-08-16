@@ -181,6 +181,69 @@ export async function runStart(args: string[], deps: StartDeps): Promise<string>
   };
   deps.sessionStore.addSession(session);
   deps.sessionRuntime.register(channelId, handle);
+
+  // KAN-7: the agent running inside this session can rename its own chat --
+  // e.g. once it picks up a ticket -- by signaling the harness (opencode's
+  // adapter watches its own session-title mechanism; see opencodeHarness.ts).
+  // `deps.sessionStore` is the single source of truth for the session's
+  // *current* identifier (rather than a second variable tracked in this
+  // closure), so a failure message after a prior successful rename always
+  // reports the name the channel actually has right now.
+  async function performRename(newTitle: string): Promise<void> {
+    const newIdentifier = `${newTitle} : ${deps.hostname}`;
+    const newChannelSlug = slugify(`session-${sessionNumber}-${newTitle}`);
+    try {
+      await deps.restClient.renameChannel(channelId, newChannelSlug, newIdentifier);
+      deps.sessionStore.renameSession(session.id, newIdentifier);
+      deps.logger.info('renamed session chat at the agent\'s request', {
+        sessionId: session.id,
+        channelId,
+        newIdentifier,
+      });
+    } catch (err) {
+      // AC3: a failed rename (permissions, name collision, ...) must be
+      // surfaced, not left as a silently-stale name -- and must not be
+      // retried automatically forever, so this is a one-shot attempt per
+      // signal. If the agent still wants the new name, its own retry of
+      // the underlying signal (e.g. PATCHing its opencode session title
+      // again) naturally produces another signal here.
+      deps.logger.error('failed to rename session chat at the agent\'s request', {
+        err,
+        sessionId: session.id,
+        channelId,
+        attemptedIdentifier: newIdentifier,
+      });
+      const stillNamed = deps.sessionStore.findByChannelId(channelId)?.identifier ?? identifier;
+      // Both interpolated values ultimately derive from the agent-set
+      // `newTitle` (review kan7-1 F1, same class of issue as kan3-1 F1 /
+      // kan4-1 F1) -- strip backticks so it can't break out of the
+      // backtick-quoted span it's placed in.
+      try {
+        await deps.restClient.createPost(
+          channelId,
+          `Could not rename this chat to \`${stripBackticks(newIdentifier)}\`: ${errMessage(err)}. It is still named \`${stripBackticks(stillNamed)}\`.`,
+        );
+      } catch (postErr) {
+        deps.logger.error('failed to post rename-failure notice', { err: postErr, channelId });
+      }
+    }
+  }
+
+  // Serializes rename attempts (review kan7-1 F2): without this, two
+  // `onRename` fires in quick succession (AC2's own scenario -- opencode's
+  // SSE handler invokes the callback synchronously per event, no await in
+  // between) would each kick off an independent, concurrent `renameChannel`
+  // request whose completion order isn't guaranteed to match firing order,
+  // letting `sessionStore.renameSession` end up called with the OLDER
+  // identifier after the newer one. Chaining each new attempt onto the
+  // promise of the prior one means the second request is never even
+  // *issued* until the first has fully settled (success or failure), so
+  // store updates always happen in true chronological (fire) order.
+  let renameChain: Promise<void> = Promise.resolve();
+  handle.onRename((newTitle) => {
+    renameChain = renameChain.then(() => performRename(newTitle));
+  });
+
   handle.onExit(({ code }) => {
     // Operator-initiated stop vs. unexpected crash (KAN-6): stopCommand.ts's
     // `runStop` marks the session `stopped` in SessionStore *before* it ever
@@ -205,9 +268,17 @@ export async function runStart(args: string[], deps: StartDeps): Promise<string>
     // (a future harness, or a change to opencode's own `stop()`) rather than
     // closing a gap that currently fires.
     const current = deps.sessionStore.findByChannelId(channelId);
+    // Prefer the store's current identifier over this closure's `identifier`
+    // constant, which is frozen at the session's default `#<n> : <hostName>`
+    // name -- KAN-7 can have renamed it since, and the store is the single
+    // source of truth for "what this session is called right now". Falls
+    // back to the original `identifier` only if the store has no record at
+    // all (shouldn't happen for a session `runStart` itself just added, but
+    // keeps this resilient rather than crashing on a stale-data edge case).
+    const displayIdentifier = current?.identifier ?? identifier;
     if (current !== undefined && current.status === 'stopped') {
       deps.logger.info('harness session exited after an operator-initiated stop -- no crash notice needed', {
-        identifier,
+        identifier: displayIdentifier,
         channelId,
         code,
       });
@@ -215,7 +286,7 @@ export async function runStart(args: string[], deps: StartDeps): Promise<string>
     }
 
     deps.logger.error('harness session exited -- marking it stopped and notifying the operator', {
-      identifier,
+      identifier: displayIdentifier,
       channelId,
       code,
     });
@@ -227,9 +298,9 @@ export async function runStart(args: string[], deps: StartDeps): Promise<string>
     // failure -- this callback is synchronous void per HarnessSessionHandle,
     // so nothing here can be awaited by the caller.
     deps.restClient
-      .createPost(channelId, `Session \`${identifier}\` crashed unexpectedly and is no longer running.`)
+      .createPost(channelId, `Session \`${displayIdentifier}\` crashed unexpectedly and is no longer running.`)
       .catch((err: unknown) => {
-        deps.logger.error('failed to notify the operator that a session crashed', { err, identifier, channelId });
+        deps.logger.error('failed to notify the operator that a session crashed', { err, identifier: displayIdentifier, channelId });
       });
   });
 

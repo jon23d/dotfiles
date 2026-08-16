@@ -22,6 +22,7 @@ function fakeRestClient(overrides: Partial<MattermostRestClient> = {}): Mattermo
     createPrivateChannel: vi.fn().mockResolvedValue('new-channel-id'),
     addChannelMember: vi.fn().mockResolvedValue(undefined),
     archiveChannel: vi.fn().mockResolvedValue(undefined),
+    renameChannel: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -32,6 +33,7 @@ function fakeSessionStore(overrides: Partial<SessionStore> = {}): SessionStore {
     addSession: vi.fn(),
     findByChannelId: vi.fn().mockReturnValue(undefined),
     markStopped: vi.fn(),
+    renameSession: vi.fn(),
     ...overrides,
   };
 }
@@ -50,6 +52,7 @@ function fakeHandle(overrides: Partial<HarnessSessionHandle> = {}): HarnessSessi
     sendPrompt: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn(),
     onExit: vi.fn(),
+    onRename: vi.fn(),
     ...overrides,
   };
 }
@@ -358,5 +361,162 @@ describe('runStart', () => {
 
     expect(restClient.archiveChannel).toHaveBeenCalledWith('new-channel-id');
     expect(reply).toMatch(/channel has been cleaned up/i);
+  });
+
+  describe('onRename wiring (KAN-7)', () => {
+    function withCapturedRenameCallback() {
+      let capturedRenameCallback: ((identifier: string) => void) | undefined;
+      const handle = fakeHandle({
+        onRename: vi.fn((cb: (identifier: string) => void) => {
+          capturedRenameCallback = cb;
+        }),
+      });
+      const adapter = fakeOpencodeAdapter({ start: vi.fn().mockResolvedValue(handle) });
+      return { handle, adapter, fire: (identifier: string) => capturedRenameCallback?.(identifier) };
+    }
+
+    it('renames the Mattermost channel to `<identifier> : <hostName>`, preserving the host suffix, and updates the session store', async () => {
+      const { adapter, fire } = withCapturedRenameCallback();
+      const restClient = fakeRestClient();
+      const sessionStore = fakeSessionStore();
+      const d = deps({ restClient, sessionStore, harnesses: { opencode: adapter } });
+
+      await runStart(['opencode', '/home/jon/project'], d);
+      fire('KAN-4');
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(restClient.renameChannel).toHaveBeenCalledWith(
+        'new-channel-id',
+        expect.stringMatching(/kan-4/),
+        'KAN-4 : devsix',
+      );
+      expect(sessionStore.renameSession).toHaveBeenCalledWith(expect.any(String), 'KAN-4 : devsix');
+    });
+
+    it('renames again on a second, later signal (AC2: work identity can change again)', async () => {
+      const { adapter, fire } = withCapturedRenameCallback();
+      const restClient = fakeRestClient();
+      const sessionStore = fakeSessionStore();
+      const d = deps({ restClient, sessionStore, harnesses: { opencode: adapter } });
+
+      await runStart(['opencode', '/home/jon/project'], d);
+      fire('KAN-4');
+      fire('KAN-9');
+      // Renames are now serialized (kan7-1 F2), which adds an extra
+      // microtask hop per attempt -- wait for the end state rather than
+      // counting exact ticks, so this test doesn't depend on that
+      // implementation detail.
+      await vi.waitFor(() => expect(sessionStore.renameSession).toHaveBeenNthCalledWith(2, expect.any(String), 'KAN-9 : devsix'));
+
+      expect(restClient.renameChannel).toHaveBeenCalledTimes(2);
+      expect(restClient.renameChannel).toHaveBeenNthCalledWith(2, 'new-channel-id', expect.stringMatching(/kan-9/), 'KAN-9 : devsix');
+    });
+
+    it('when the Mattermost rename fails (e.g. a name collision), logs it loudly, posts a failure notice into the channel, and does not update the session store (AC3: never fail silently)', async () => {
+      const { adapter, fire } = withCapturedRenameCallback();
+      const restClient = fakeRestClient({ renameChannel: vi.fn().mockRejectedValue(new Error('channel name already exists')) });
+      const sessionStore = fakeSessionStore();
+      const logger = silentLogger();
+      const d = deps({ restClient, sessionStore, logger, harnesses: { opencode: adapter } });
+
+      await runStart(['opencode', '/home/jon/project'], d);
+      fire('KAN-4');
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(logger.error).toHaveBeenCalled();
+      expect(restClient.createPost).toHaveBeenCalledWith(
+        'new-channel-id',
+        expect.stringMatching(/rename|already exists/i),
+      );
+      expect(sessionStore.renameSession).not.toHaveBeenCalled();
+    });
+
+    it('logs loudly (and does not throw) if posting the rename-failure notice itself also fails', async () => {
+      const { adapter, fire } = withCapturedRenameCallback();
+      const restClient = fakeRestClient({
+        renameChannel: vi.fn().mockRejectedValue(new Error('channel name already exists')),
+        createPost: vi.fn().mockRejectedValue(new Error('mattermost 500')),
+      });
+      const logger = silentLogger();
+      const d = deps({ restClient, logger, harnesses: { opencode: adapter } });
+
+      await runStart(['opencode', '/home/jon/project'], d);
+      expect(() => fire('KAN-4')).not.toThrow();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('sanitizes backticks out of the agent-controlled title before interpolating it into the rename-failure notice (kan7-1 F1)', async () => {
+      const { adapter, fire } = withCapturedRenameCallback();
+      const restClient = fakeRestClient({ renameChannel: vi.fn().mockRejectedValue(new Error('channel name already exists')) });
+      const d = deps({ restClient, harnesses: { opencode: adapter } });
+
+      await runStart(['opencode', '/home/jon/project'], d);
+      // A backtick embedded in the agent-set title must not survive
+      // unescaped into a backtick-quoted span of the reply (same class of
+      // issue as kan3-1 F1 / kan4-1 F1 -- see markdown.ts's stripBackticks).
+      fire('KAN-4`; rm -rf /');
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(restClient.createPost).toHaveBeenCalledWith(
+        'new-channel-id',
+        expect.not.stringContaining('KAN-4`;'),
+      );
+    });
+
+    it('serializes rename attempts per session so a rapid second signal is never overwritten in the store by the first settling later (kan7-1 F2)', async () => {
+      const { adapter, fire } = withCapturedRenameCallback();
+      const resolvers: Array<() => void> = [];
+      const renameChannel = vi.fn().mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            resolvers.push(resolve);
+          }),
+      );
+      const restClient = fakeRestClient({ renameChannel });
+      const sessionStore = fakeSessionStore();
+      const d = deps({ restClient, sessionStore, harnesses: { opencode: adapter } });
+
+      await runStart(['opencode', '/home/jon/project'], d);
+      // Fired back-to-back with no await between -- exactly how
+      // opencodeHarness.ts's synchronous SSE handler invokes onRename
+      // callbacks for two title changes.
+      fire('KAN-4');
+      fire('KAN-9');
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Serialized: the second renameChannel call must not even be *issued*
+      // yet -- it's chained behind the first's completion, so there is
+      // never a moment with two in-flight PUTs whose settlement order could
+      // race and let the older identifier win the store update.
+      expect(renameChannel).toHaveBeenCalledTimes(1);
+      expect(renameChannel).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'KAN-4 : devsix');
+      expect(sessionStore.renameSession).not.toHaveBeenCalled();
+
+      // Settle the first request -- only now should the second be issued.
+      resolvers[0]?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(renameChannel).toHaveBeenCalledTimes(2);
+      expect(renameChannel).toHaveBeenNthCalledWith(2, expect.anything(), expect.anything(), 'KAN-9 : devsix');
+
+      resolvers[1]?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(sessionStore.renameSession).toHaveBeenLastCalledWith(expect.any(String), 'KAN-9 : devsix');
+    });
   });
 });
