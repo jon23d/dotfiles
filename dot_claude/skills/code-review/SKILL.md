@@ -10,8 +10,17 @@ description: >-
 
 # Code review
 
-When reviewing on someone else's behalf, file every defect — including ones you
-fix yourself.
+Reviews are strictly read-only. File every defect you find — never fix it
+yourself, not even a one-line change you're certain is correct. The
+implementer applies fixes, not the reviewer.
+
+This isn't optional politeness: a review commonly runs while other agents
+share the same working tree (an implementer on another slice, a supervising
+session mid-git-operation). An edit you make can be silently lost to a
+concurrent `git checkout`/commit, or land half-applied. If you notice
+something a fix would take seconds to make, that's still not your call —
+file it with enough detail (`file:line`, what's wrong, what would resolve
+it) that the implementer can apply it in seconds too.
 
 ## Out of scope
 
