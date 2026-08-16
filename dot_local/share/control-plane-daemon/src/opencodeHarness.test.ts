@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CONTROL_PLANE_DAEMON_ENV_VAR, createOpencodeHarness } from './opencodeHarness.js';
+import { CONTROL_PLANE_DAEMON_ENV_VAR, ORCHESTRATOR_AGENT_NAME, createOpencodeHarness } from './opencodeHarness.js';
 import type { SpawnedProcessLike } from './opencodeHarness.js';
 import type { Logger } from './logger.js';
 
@@ -43,6 +43,16 @@ function fakeChildProcess(): SpawnedProcessLike & { emitExit(code: number | null
 
 function healthyHandler() {
   return http.get(`${BASE_URL}/global/health`, () => HttpResponse.json({ healthy: true, version: '1.0.0' }));
+}
+
+/** GET /agent, listing the orchestrator agent under the real identifier opencode
+ * uses to select it (KAN-9: confirmed live against opencode 1.18.18 to be the
+ * frontmatter `name:` field, "Orchestrator" -- NOT the `orchestrator.md` filename
+ * stem). `spawnSharedServer` checks this list is present and contains that name
+ * before it will hand back a server to create sessions against, so every test
+ * that reaches a healthy shared server needs this handler registered too. */
+function agentAvailableHandler(names: string[] = [ORCHESTRATOR_AGENT_NAME]) {
+  return http.get(`${BASE_URL}/agent`, () => HttpResponse.json(names.map((name) => ({ name, mode: 'primary' }))));
 }
 
 /** A hand-controlled SSE stream for `/event` -- lets a test push synthetic opencode
@@ -110,6 +120,7 @@ describe('createOpencodeHarness', () => {
     let createdWithDirectory: string | undefined;
     server.use(
       healthyHandler(),
+      agentAvailableHandler(),
       http.post(`${BASE_URL}/session`, ({ request }) => {
         createdWithDirectory = new URL(request.url).searchParams.get('directory') ?? undefined;
         return HttpResponse.json({ id: 'ses_abc123' });
@@ -128,11 +139,71 @@ describe('createOpencodeHarness', () => {
     expect(createdWithDirectory).toBe(dir);
   });
 
+  describe('orchestrator agent selection (KAN-9)', () => {
+    it('sends the confirmed orchestrator agent identifier in the POST /session body instead of an empty body', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      let capturedBody: unknown;
+      server.use(
+        healthyHandler(),
+        agentAvailableHandler(),
+        http.post(`${BASE_URL}/session`, async ({ request }) => {
+          capturedBody = await request.json();
+          return HttpResponse.json({ id: 'ses_abc123' });
+        }),
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+
+      await harness.start({ folder: dir, logger: silentLogger() });
+
+      // `toStrictEqual`, not `toEqual` -- `toEqual` treats `{}` and `{ agent: undefined }` as
+      // equal (undefined-valued keys are ignored), which would let this test pass even if
+      // `ORCHESTRATOR_AGENT_NAME` failed to import (vitest's transform doesn't type-check, so a
+      // missing export silently becomes `undefined` here rather than a compile error).
+      expect(capturedBody).toStrictEqual({ agent: ORCHESTRATOR_AGENT_NAME });
+    });
+
+    it('rejects loudly and never creates a session when opencode has no agent matching the confirmed identifier, rather than silently falling back', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const createSessionHandler = vi.fn(() => HttpResponse.json({ id: 'ses_abc123' }));
+      server.use(
+        healthyHandler(),
+        // Opencode is up, but the orchestrator agent isn't among its known agents --
+        // e.g. orchestrator.md failed to load, or the frontmatter name drifted.
+        agentAvailableHandler(['build', 'plan', 'general']),
+        http.post(`${BASE_URL}/session`, createSessionHandler),
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+
+      await expect(harness.start({ folder: dir, logger: silentLogger() })).rejects.toThrow(
+        new RegExp(ORCHESTRATOR_AGENT_NAME),
+      );
+      expect(createSessionHandler).not.toHaveBeenCalled();
+    });
+
+    it('rejects loudly when GET /agent cannot be reached at all', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const createSessionHandler = vi.fn(() => HttpResponse.json({ id: 'ses_abc123' }));
+      server.use(
+        healthyHandler(),
+        http.get(`${BASE_URL}/agent`, () => new HttpResponse(null, { status: 500 })),
+        http.post(`${BASE_URL}/session`, createSessionHandler),
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+
+      await expect(harness.start({ folder: dir, logger: silentLogger() })).rejects.toThrow(/agent/i);
+      expect(createSessionHandler).not.toHaveBeenCalled();
+    });
+  });
+
   it('spawns `opencode serve` with a distinguishing env var so an in-session agent can tell it is running under the daemon (kan7-2 F4)', async () => {
     const child = fakeChildProcess();
     const spawnProcess = vi.fn().mockReturnValue(child);
     server.use(
       healthyHandler(),
+      agentAvailableHandler(),
       http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
     );
     const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
@@ -151,6 +222,7 @@ describe('createOpencodeHarness', () => {
     const spawnProcess = vi.fn().mockReturnValue(child);
     server.use(
       healthyHandler(),
+      agentAvailableHandler(),
       http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
     );
     const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
@@ -167,6 +239,7 @@ describe('createOpencodeHarness', () => {
     const spawnProcess = vi.fn().mockImplementation(() => fakeChildProcess());
     server.use(
       healthyHandler(),
+      agentAvailableHandler(),
       http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
     );
 
@@ -219,6 +292,7 @@ describe('createOpencodeHarness', () => {
     let capturedDirectory: string | null = null;
     server.use(
       healthyHandler(),
+      agentAvailableHandler(),
       http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
       http.post(`${BASE_URL}/session/ses_abc123/prompt_async`, async ({ request }) => {
         capturedBody = await request.json();
@@ -231,7 +305,14 @@ describe('createOpencodeHarness', () => {
 
     await handle.sendPrompt('hello there');
 
-    expect(capturedBody).toEqual({ parts: [{ type: 'text', text: 'hello there' }] });
+    // KAN-9: live-verified against a real opencode server that `POST /session`'s `agent` field
+    // is NOT enough on its own -- `POST /session/:id/prompt_async` has its own independent
+    // `agent` field, and *that* is what actually determines which agent runs the message.
+    // Omitting it here silently ran the message under opencode's own default agent ("build"),
+    // even though the session itself was created with `agent: "Orchestrator"` -- confirmed by
+    // inspecting `GET /session/:id/message`'s `info.agent` on a real server both with and
+    // without this field set on prompt_async.
+    expect(capturedBody).toEqual({ agent: ORCHESTRATOR_AGENT_NAME, parts: [{ type: 'text', text: 'hello there' }] });
     expect(capturedDirectory).toBe(dir);
   });
 
@@ -240,6 +321,7 @@ describe('createOpencodeHarness', () => {
     const spawnProcess = vi.fn().mockReturnValue(child);
     server.use(
       healthyHandler(),
+      agentAvailableHandler(),
       http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
       http.post(`${BASE_URL}/session/ses_abc123/prompt_async`, () =>
         HttpResponse.json({ name: 'NotFoundError', data: { message: 'Session not found' } }, { status: 404 }),
@@ -257,6 +339,7 @@ describe('createOpencodeHarness', () => {
     let deletedId: string | undefined;
     server.use(
       healthyHandler(),
+      agentAvailableHandler(),
       http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
       http.delete(`${BASE_URL}/session/:id`, ({ params }) => {
         deletedId = params.id as string;
@@ -278,6 +361,7 @@ describe('createOpencodeHarness', () => {
     const spawnProcess = vi.fn().mockReturnValue(child);
     server.use(
       healthyHandler(),
+      agentAvailableHandler(),
       http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
     );
     const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
@@ -295,6 +379,7 @@ describe('createOpencodeHarness', () => {
     const spawnProcess = vi.fn().mockReturnValue(child);
     server.use(
       healthyHandler(),
+      agentAvailableHandler(),
       http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
     );
     const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
@@ -340,6 +425,7 @@ describe('createOpencodeHarness', () => {
       const sse = controllableEventStream();
       server.use(
         healthyHandler(),
+        agentAvailableHandler(),
         http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
         sse.handler,
       );
@@ -360,6 +446,7 @@ describe('createOpencodeHarness', () => {
       const sse = controllableEventStream();
       server.use(
         healthyHandler(),
+        agentAvailableHandler(),
         http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
         sse.handler,
       );
@@ -386,6 +473,7 @@ describe('createOpencodeHarness', () => {
       let created = 0;
       server.use(
         healthyHandler(),
+        agentAvailableHandler(),
         http.post(`${BASE_URL}/session`, () => {
           created += 1;
           return HttpResponse.json({ id: created === 1 ? 'ses_aaa' : 'ses_bbb', title: 'New session - x' });
@@ -413,6 +501,7 @@ describe('createOpencodeHarness', () => {
       const sse = controllableEventStream();
       server.use(
         healthyHandler(),
+        agentAvailableHandler(),
         http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
         sse.handler,
       );
@@ -437,6 +526,7 @@ describe('createOpencodeHarness', () => {
       const sse = controllableEventStream();
       server.use(
         healthyHandler(),
+        agentAvailableHandler(),
         http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
         sse.handler,
       );
@@ -458,6 +548,7 @@ describe('createOpencodeHarness', () => {
       const spawnProcess = vi.fn().mockReturnValue(child);
       server.use(
         healthyHandler(),
+        agentAvailableHandler(),
         http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
         http.get(`${BASE_URL}/event`, () => new HttpResponse(null, { status: 500 })),
       );

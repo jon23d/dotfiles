@@ -56,6 +56,88 @@ export interface OpencodeHarnessConfig {
  */
 export const CONTROL_PLANE_DAEMON_ENV_VAR = 'CONTROL_PLANE_DAEMON';
 
+/**
+ * The identifier opencode's `agent` fields need to select the orchestrator
+ * agent (KAN-9). Live-verified against a real local `opencode serve`
+ * (1.18.18), not assumed:
+ *   - `opencode agent list` and `GET /agent` both resolve the agent by its
+ *     frontmatter `name:` field (`dot_config/opencode/agents/orchestrator.md`
+ *     has `name: Orchestrator`) -- NOT the `orchestrator.md` filename stem.
+ *     `GET /agent` against this machine's real config echoes back exactly
+ *     `"name": "Orchestrator"`.
+ *   - Agent configs are discovered from the global `~/.config/opencode/agents/`
+ *     directory and are available to every session regardless of that
+ *     session's own `?directory=` -- confirmed by calling `GET
+ *     /agent?directory=<dir-with-no-local-.opencode-config>` and seeing
+ *     "Orchestrator" in the list anyway. So there is no per-session-folder
+ *     discoverability concern to handle here.
+ *   - `POST /session` does NOT validate this value: `{"agent":
+ *     "totally-bogus-name"}` is accepted with a 200 and echoed straight back
+ *     in the response, so a bad value can't be caught from that response
+ *     alone -- see `verifyOrchestratorAgentAvailable` below, which checks
+ *     `GET /agent` itself instead.
+ *   - Bigger finding, live-verified end to end: `POST /session`'s `agent`
+ *     field is NOT what actually selects the agent that runs a message. It's
+ *     essentially cosmetic for this headless/API-driven flow. What actually
+ *     matters is the *separate*, independent `agent` field on `POST
+ *     /session/:id/prompt_async` -- proven by creating a real session with
+ *     `agent: "Orchestrator"`, sending a prompt via `prompt_async` with no
+ *     `agent` field on that call, and inspecting the resulting message via
+ *     `GET /session/:id/message`: `info.agent` came back `"build"` (opencode's
+ *     own default), completely ignoring what the session was created with.
+ *     Re-sending the identical prompt with `agent: "Orchestrator"` also set
+ *     on the `prompt_async` body flipped `info.agent` to `"Orchestrator"`.
+ *     That is exactly the silent-fallback failure mode this epic's "never
+ *     fail silently" principle forbids, and it means both `createSession`
+ *     (this session's declared default) and `sendPrompt` (what actually runs)
+ *     must send this field -- setting it in only one place looks correct but
+ *     silently doesn't work.
+ */
+export const ORCHESTRATOR_AGENT_NAME = 'Orchestrator';
+
+const agentListSchema = z.array(z.object({ name: z.string() }).passthrough());
+
+/**
+ * Confirms opencode actually has an agent named `ORCHESTRATOR_AGENT_NAME`
+ * before this harness will create any session against it (KAN-9). Runs once
+ * per shared server, right after the health-check loop in
+ * `spawnSharedServer` -- same lifetime as the health check itself, not
+ * per-session -- because the agent list is server-global config (see the doc
+ * comment on `ORCHESTRATOR_AGENT_NAME`), not something that varies per
+ * session folder. A missing/wrong agent throws here, loudly, and that
+ * rejection propagates out of `spawnSharedServer` exactly like a failed
+ * health check does -- there is no code path that lets `start()` succeed
+ * while quietly running under the wrong agent.
+ */
+async function verifyOrchestratorAgentAvailable(baseUrl: string, fetchImpl: typeof fetch): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetchImpl(`${baseUrl}/agent`);
+  } catch (cause) {
+    throw new Error(
+      `failed to verify opencode's "${ORCHESTRATOR_AGENT_NAME}" agent is available (GET /agent unreachable): ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '<unreadable body>');
+    throw new Error(
+      `failed to verify opencode's "${ORCHESTRATOR_AGENT_NAME}" agent is available: GET /agent returned ${res.status} ${res.statusText} - ${text}`,
+    );
+  }
+  const parsed = agentListSchema.safeParse(await res.json());
+  if (!parsed.success) {
+    throw new Error(`opencode's GET /agent returned an unexpected response shape: ${JSON.stringify(parsed.error.issues)}`);
+  }
+  const found = parsed.data.some((agent) => agent.name === ORCHESTRATOR_AGENT_NAME);
+  if (!found) {
+    const available = parsed.data.map((agent) => agent.name).join(', ') || '<none>';
+    throw new Error(
+      `opencode has no agent named "${ORCHESTRATOR_AGENT_NAME}" (checked GET /agent) -- refusing to create sessions rather than silently falling back to opencode's own default agent. Available agents: ${available}`,
+    );
+  }
+}
+
 function defaultSpawn(command: string, args: string[], options: { cwd: string; env: Record<string, string> }): SpawnedProcessLike {
   return nodeSpawn(command, args, {
     cwd: options.cwd,
@@ -261,6 +343,10 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     }
 
     logger.info('shared opencode serve process is ready', { port });
+
+    await verifyOrchestratorAgentAvailable(baseUrl, fetchImpl);
+    logger.info(`confirmed opencode has the "${ORCHESTRATOR_AGENT_NAME}" agent available`, { port });
+
     return server;
   }
 
@@ -300,7 +386,7 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     const res = await fetchImpl(`${server.baseUrl}/session?directory=${encodeURIComponent(folder)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ agent: ORCHESTRATOR_AGENT_NAME }),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '<unreadable body>');
@@ -395,7 +481,9 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ parts: [{ type: 'text', text: message }] }),
+              // `agent` here, not just on `POST /session`, is what actually selects the running
+              // agent for this message -- see ORCHESTRATOR_AGENT_NAME's doc comment (KAN-9).
+              body: JSON.stringify({ agent: ORCHESTRATOR_AGENT_NAME, parts: [{ type: 'text', text: message }] }),
             },
           );
           if (!res.ok) {
