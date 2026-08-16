@@ -209,6 +209,39 @@ describe('runStart', () => {
     expect(restClient.createPost).toHaveBeenCalledWith('new-channel-id', expect.stringMatching(/crash|no longer running|exited/i));
   });
 
+  it('skips the crash notice (and does not re-call markStopped) when the exit fires after the session was already marked stopped -- an operator-initiated `stop` (KAN-6), not a crash', async () => {
+    let capturedExitCallback: ((info: { code: number | null }) => void) | undefined;
+    const handle = fakeHandle({
+      onExit: vi.fn((cb: (info: { code: number | null }) => void) => {
+        capturedExitCallback = cb;
+      }),
+    });
+    const adapter = fakeOpencodeAdapter({ start: vi.fn().mockResolvedValue(handle) });
+    const restClient = fakeRestClient();
+    const sessionStore = fakeSessionStore({
+      // Simulates KAN-6's `stop` having already flipped this session's
+      // status before the harness's exit event reaches this callback.
+      findByChannelId: vi.fn().mockReturnValue({
+        id: 'sess-1',
+        identifier: '#4 : devsix',
+        host: 'devsix',
+        status: 'stopped',
+        harness: 'opencode',
+        folder: '/home/jon/project',
+        channelId: 'new-channel-id',
+      }),
+    });
+    const d = deps({ restClient, sessionStore, harnesses: { opencode: adapter } });
+
+    await runStart(['opencode', '/home/jon/project'], d);
+    capturedExitCallback?.({ code: 0 });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(restClient.createPost).not.toHaveBeenCalled();
+    expect(sessionStore.markStopped).not.toHaveBeenCalled();
+  });
+
   it('logs loudly (and does not throw) if posting the unexpected-exit notice itself fails', async () => {
     let capturedExitCallback: ((info: { code: number | null }) => void) | undefined;
     const handle = fakeHandle({

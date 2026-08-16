@@ -182,6 +182,38 @@ export async function runStart(args: string[], deps: StartDeps): Promise<string>
   deps.sessionStore.addSession(session);
   deps.sessionRuntime.register(channelId, handle);
   handle.onExit(({ code }) => {
+    // Operator-initiated stop vs. unexpected crash (KAN-6): stopCommand.ts's
+    // `runStop` marks the session `stopped` in SessionStore *before* it ever
+    // calls `handle.stop()`, specifically so that whenever this callback
+    // fires as a result of that stop -- synchronously or later -- it finds
+    // the session already stopped here and can tell the two cases apart.
+    // Re-checking via `findByChannelId` (rather than trusting a boolean
+    // captured in this closure) means this also correctly recognizes a stop
+    // that happened at any point before this fires, not just one that
+    // happens to race a specific flag.
+    //
+    // Review note (kan6-1 F2): for opencode -- the only harness implemented
+    // today -- this branch is currently unreachable in production, not a fix
+    // for a bug that was ever live there. opencodeHarness.ts's `stop()` only
+    // issues a `DELETE /session/:id` against the shared `opencode serve`
+    // process; it never calls `notifyExit`/fires `exitCallbacks` for that
+    // one session. This handle's `onExit` only ever fires when the *whole
+    // shared process* dies (see opencodeHarness.ts's `child.on('exit', ...)`
+    // -> `notifyExit`), which has nothing to do with a single session's
+    // `stop()`. So today, an operator `stop` on an opencode session never
+    // triggers this callback at all -- this guard is purely forward-looking
+    // (a future harness, or a change to opencode's own `stop()`) rather than
+    // closing a gap that currently fires.
+    const current = deps.sessionStore.findByChannelId(channelId);
+    if (current !== undefined && current.status === 'stopped') {
+      deps.logger.info('harness session exited after an operator-initiated stop -- no crash notice needed', {
+        identifier,
+        channelId,
+        code,
+      });
+      return;
+    }
+
     deps.logger.error('harness session exited -- marking it stopped and notifying the operator', {
       identifier,
       channelId,
@@ -193,13 +225,7 @@ export async function runStart(args: string[], deps: StartDeps): Promise<string>
     // message its now-dead channel (daemon.ts's forwardToSessionIfApplicable
     // handles that reactive case). Fire-and-forget, loudly logged on
     // failure -- this callback is synchronous void per HarnessSessionHandle,
-    // so nothing here can be awaited by the caller. Always "unexpected"
-    // today: KAN-6 (`stop`) doesn't exist yet, so nothing in this codebase
-    // calls `handle.stop()` after a session is fully registered -- the only
-    // current `stop()` call sites are the failure-cleanup paths above,
-    // which all return before onExit is ever registered. When `stop` lands,
-    // it will need a way to suppress this notice for an operator-requested
-    // stop (e.g. a flag set just before calling `handle.stop()`).
+    // so nothing here can be awaited by the caller.
     deps.restClient
       .createPost(channelId, `Session \`${identifier}\` crashed unexpectedly and is no longer running.`)
       .catch((err: unknown) => {

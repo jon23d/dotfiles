@@ -2,14 +2,15 @@ import { commandRegistry } from './commands.js';
 import { renderCommandDetail, renderCommandList } from './helpCommand.js';
 import { renderSessionList } from './listCommand.js';
 import { runStart } from './startCommand.js';
+import { runStop } from './stopCommand.js';
 import type { StartDeps } from './startCommand.js';
 import type { IncomingPost, ReplyDecision, RoutingContext } from './types.js';
 
 /**
- * KAN-3 makes `help` a real command, KAN-4 makes `list` one, and KAN-5 makes
- * `start` one; `stop` is still not implemented (KAN-6). Any message that
- * isn't a registered command gets this reply, per the ticket's acceptance
- * criteria: a clear error pointing at `help`, not a silent no-op.
+ * KAN-3 makes `help` a real command, KAN-4 makes `list` one, KAN-5 makes
+ * `start` one, and KAN-6 makes `stop` one. Any message that isn't a
+ * registered command gets this reply, per the ticket's acceptance criteria:
+ * a clear error pointing at `help`, not a silent no-op.
  */
 export const UNKNOWN_COMMAND_REPLY = 'Unknown command. Try `help`.';
 
@@ -66,6 +67,15 @@ export async function decideReply(post: IncomingPost, context: RoutingContext, d
 
   if (name === 'start') {
     const replyMessage = await runStart(args, deps);
+    return { shouldReply: true, replyMessage };
+  }
+
+  if (name === 'stop') {
+    // Replies into the control-plane DM (same as every other command here),
+    // not the session's own channel -- by the time `stop` has done anything,
+    // that channel's session is dead, so replying there would be a message
+    // into a channel the operator has no reason to still be watching.
+    const replyMessage = await runStop(args, deps);
     return { shouldReply: true, replyMessage };
   }
 

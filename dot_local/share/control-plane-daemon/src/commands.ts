@@ -48,4 +48,16 @@ export const commandRegistry: readonly CommandDefinition[] = [
       'If the harness or folder is invalid/inaccessible, or the session channel can\'t be created, replies ' +
       'with a clear error and creates nothing.',
   },
+  {
+    name: 'stop',
+    summary: 'Stop a running agent session by its identifier.',
+    usage:
+      'stop <identifier>\n\n' +
+      'Terminates the underlying process for the session whose identifier (e.g. `#4 : hostName`, as shown by ' +
+      '`list`) matches <identifier>, and marks it stopped.\n\n' +
+      'With no identifier, replies asking which session instead of guessing.\n\n' +
+      'Example: `stop #4 : devsix`\n\n' +
+      'If the session is already stopped, replies with a clear no-op message rather than an error. If no ' +
+      'session matches the identifier, replies with a clear "not found" message.',
+  },
 ];
