@@ -243,4 +243,66 @@ describe('decideReply', () => {
       expect(decision.replyMessage).not.toBe(UNKNOWN_COMMAND_REPLY);
     });
   });
+
+  describe('`stop`', () => {
+    it('dispatches into runStop and returns its reply -- stops a running session by identifier', async () => {
+      const session: Session = {
+        id: 'sess-1',
+        identifier: '#4 : devsix',
+        host: 'devsix',
+        status: 'running',
+        harness: 'opencode',
+        folder: '/home/jon/project',
+        channelId: 'chan-4',
+      };
+      const handle = fakeHandle();
+      const sessionStore = fakeSessionStore([session]);
+      const sessionRuntime = fakeSessionRuntime({ get: vi.fn().mockReturnValue(handle) });
+      const deps = fakeDeps({ sessionStore, sessionRuntime });
+
+      const decision = await decideReply(post({ message: 'stop #4 : devsix' }), context, deps);
+
+      expect(decision.shouldReply).toBe(true);
+      expect(decision.replyMessage).toContain('#4 : devsix');
+      expect(handle.stop).toHaveBeenCalled();
+      expect(sessionStore.markStopped).toHaveBeenCalledWith('sess-1');
+    });
+
+    it('asks which session when no identifier is given', async () => {
+      const decision = await decideReply(post({ message: 'stop' }), context, fakeDeps());
+
+      expect(decision.shouldReply).toBe(true);
+      expect(decision.replyMessage).toMatch(/which session/i);
+    });
+
+    it('replies with a clear not-found message for an unknown identifier', async () => {
+      const decision = await decideReply(post({ message: 'stop #9 : devsix' }), context, fakeDeps({ sessionStore: fakeSessionStore([]) }));
+
+      expect(decision.shouldReply).toBe(true);
+      expect(decision.replyMessage).toMatch(/no session found|not found/i);
+    });
+
+    it('replies with a clear no-op message for a session that is already stopped', async () => {
+      const session: Session = {
+        id: 'sess-1',
+        identifier: '#4 : devsix',
+        host: 'devsix',
+        status: 'stopped',
+        harness: 'opencode',
+        folder: '/home/jon/project',
+        channelId: 'chan-4',
+      };
+      const decision = await decideReply(post({ message: 'stop #4 : devsix' }), context, fakeDeps({ sessionStore: fakeSessionStore([session]) }));
+
+      expect(decision.shouldReply).toBe(true);
+      expect(decision.replyMessage).toMatch(/already stopped/i);
+    });
+
+    it('is case-insensitive on the command name itself', async () => {
+      const decision = await decideReply(post({ message: 'STOP #4 : devsix' }), context, fakeDeps({ sessionStore: fakeSessionStore([]) }));
+
+      expect(decision.shouldReply).toBe(true);
+      expect(decision.replyMessage).not.toBe(UNKNOWN_COMMAND_REPLY);
+    });
+  });
 });
