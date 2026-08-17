@@ -25,11 +25,15 @@ chezmoi init --apply jon23d
 ## Control-plane daemon
 
 Runs coding-agent sessions (`opencode` today) on a VM under remote control
-from a Mattermost DM. See
-[`docs/control-plane-daemon.md`](docs/control-plane-daemon.md) for the full
-operator's guide: installing/updating it, the `start`/`stop`/`list`/`help`
-command surface, the environment/config model, how to verify it's working,
-and troubleshooting.
+from a Mattermost DM. As of KAN-19 this daemon lives in its own repo,
+[jon23d/chatty](https://github.com/jon23d/chatty) — see that repo's
+`README.md` for the full operator's guide: installing/updating it, the
+`start`/`stop`/`list`/`help` command surface, the environment/config model,
+how to verify it's working, and troubleshooting.
+
+This repo's role is now just to keep `~/code/chatty` cloned/updated and
+delegate to its own install script — see
+`run_onchange_install-chatty.sh.tmpl`.
 
 ## Secrets
 

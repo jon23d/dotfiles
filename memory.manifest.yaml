@@ -5,17 +5,27 @@
 # lists below are also the canonical-name menu: the agent files cross-cutting
 # facts by picking from these, and must not invent new names.
 #
-# PROVISIONAL — first-ever bootstrap of this repo into shared memory (KAN-7,
-# 2026-08-16). Flag for human review: `dotfiles` is a general dotfiles repo,
-# but the only part with meaningful cross-session memory so far is the
-# control-plane-daemon under dot_local/share/control-plane-daemon (the
-# Mattermost <-> opencode session-orchestration daemon for the KAN-1 epic).
-# Scoped `project` to that daemon rather than the repo as a whole because
-# that's the unit of work every KAN ticket touches; reconsider if unrelated
-# dotfiles work ever needs its own memory scope.
+# PROVISIONAL — re-scoped by KAN-19 (2026-08-17), flag for human review.
+# Originally bootstrapped at KAN-7 (2026-08-16) scoped to
+# `project/control-plane-daemon`, since at the time that daemon (under
+# dot_local/share/control-plane-daemon) was the only part of this repo with
+# meaningful cross-session memory. KAN-19 extracted that daemon's code into
+# its own repo (github.com/jon23d/chatty, its own `project/chatty` scope,
+# own memory.manifest.yaml) — nothing under `project/control-plane-daemon`
+# lives in this repo anymore. Existing `project/control-plane-daemon` notes
+# remain valid *history* (many describe facts still true of the code, now
+# in chatty) but new facts about that codebase should be filed under
+# `project/chatty`, not here. Re-scoped `project` to `project/dotfiles`
+# (the repo as a whole) since there's no longer one obvious sub-project
+# dominating this repo's memory footprint. Kept `dep/opencode` and
+# `dep/mattermost` in the list below because dotfiles still owns
+# config/integration points for both (opencode.jsonc, orchestrator.md, and
+# secrets.env's per-host Mattermost bot token resolution used by both
+# interactive shells and chatty's install script) even though the
+# session-orchestration *code* moved out.
 
-domain: harness                          # innkeeper | harness — hard boundary
-project: project/control-plane-daemon    # this repo's own scope
+domain: harness              # innkeeper | harness — hard boundary
+project: project/dotfiles    # this repo's own scope
 
 # Shared dependencies this service touches. Names here are canonical — they map
 # 1:1 to dep/<name> notes in the memory store. Add a dep here BEFORE writing a
