@@ -506,8 +506,14 @@ const sessionErrorEventSchema = z
  * `verifyPromptResolvedPinnedModel` below actually needs. `info.model` is present on `role:
  * "user"` messages and reflects whatever model opencode actually resolved the message to, which
  * -- live-confirmed -- can differ from what `prompt_async`'s own request body asked for, with no
- * error of any kind surfaced anywhere else. `.passthrough()` throughout: this only needs to read
- * a few fields, not fully model opencode's message schema.
+ * error of any kind surfaced anywhere else. `info.time.created` (epoch ms) -- live-confirmed
+ * against a real `opencode serve` (1.18.18) -- is what disambiguates "the message we just sent"
+ * from an earlier message with identical text (review kan13-3 F7): every message carries its own
+ * creation timestamp, so comparing it against a timestamp captured just before `prompt_async` was
+ * called tells apart a stale duplicate from the real just-sent one. `.optional()` here, not
+ * required: older/mocked responses without it must still work via the exact-text-match fallback
+ * (see `verifyPromptResolvedPinnedModel`'s doc comment). `.passthrough()` throughout: this only
+ * needs to read a few fields, not fully model opencode's message schema.
  */
 const promptMessageListSchema = z.array(
   z
@@ -516,6 +522,7 @@ const promptMessageListSchema = z.array(
         .object({
           role: z.string(),
           model: z.object({ providerID: z.string(), modelID: z.string() }).optional(),
+          time: z.object({ created: z.number() }).passthrough().optional(),
         })
         .passthrough(),
       parts: z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough()).optional(),
@@ -558,12 +565,28 @@ const promptMessageListSchema = z.array(
  * every fresh-server send -- exactly the scenario this whole check exists to cover -- so it would
  * verify almost nothing in practice. See `promptVerifyMaxAttempts`/`promptVerifyIntervalMs`'s doc
  * comment on `OpencodeHarnessConfig` for the measured numbers behind the defaults.
+ *
+ * Review kan13-3 F7: matching "the message we just sent" by exact text equality alone is
+ * ambiguous whenever an *earlier* message in the same session happens to share that exact text --
+ * realistic for a short reply like "yes"/"ok"/"continue" in an interactive chat session. A stale
+ * text match on attempt 1 (before the real just-sent message is even visible, per the cold-start
+ * race above) would short-circuit the poll and verify against the wrong message's model data --
+ * either a false pass (if the old duplicate happened to carry the correct model) or a false abort
+ * of a healthy session (if it didn't) -- never actually waiting for the real just-sent message.
+ * `sentAtMs` (captured by the caller immediately before firing `prompt_async`) is the real
+ * disambiguator: live-confirmed that `GET /session/:id/message` returns `info.time.created`
+ * (epoch ms) on every message, so a candidate is only accepted once its own creation time is
+ * at/after the send -- a stale duplicate necessarily predates it and is skipped, same as "no
+ * match yet," so the poll keeps retrying until the real message lands. `time.created` missing
+ * (older/mocked responses) falls back to the pre-fix text-only match rather than rejecting the
+ * candidate outright.
  */
 async function verifyPromptResolvedPinnedModel(
   server: SharedServer,
   folder: string,
   sessionId: string,
   message: string,
+  sentAtMs: number,
   fetchImpl: typeof fetch,
   logger: Logger,
   maxAttempts: number,
@@ -599,7 +622,15 @@ async function verifyPromptResolvedPinnedModel(
     }
     const justSent = [...parsed.data]
       .reverse()
-      .find((m) => m.info.role === 'user' && (m.parts ?? []).some((p) => p.type === 'text' && p.text === message));
+      .find(
+        (m) =>
+          m.info.role === 'user' &&
+          (m.parts ?? []).some((p) => p.type === 'text' && p.text === message) &&
+          // F7: reject a text match that predates the send -- it's an earlier duplicate-text
+          // message, not the one we just sent. `time.created` missing falls back to trusting the
+          // text match alone (see this function's doc comment).
+          (m.info.time?.created === undefined || m.info.time.created >= sentAtMs),
+      );
     if (!justSent) {
       if (attempt < maxAttempts) {
         await sleep(intervalMs);
@@ -1058,6 +1089,11 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
 
       const handle: HarnessSessionHandle = {
         async sendPrompt(message) {
+          // F7: captured immediately before the request fires, not after -- this is the
+          // disambiguator `verifyPromptResolvedPinnedModel` uses to tell "the message we just
+          // sent" apart from an earlier message in the same session with identical text. See its
+          // doc comment for why exact-text matching alone is not enough.
+          const sentAtMs = Date.now();
           const res = await fetchImpl(
             `${server.baseUrl}/session/${encodeURIComponent(sessionId)}/prompt_async?directory=${encodeURIComponent(folder)}`,
             {
@@ -1087,6 +1123,7 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
             folder,
             sessionId,
             message,
+            sentAtMs,
             fetchImpl,
             logger,
             promptVerifyMaxAttempts,

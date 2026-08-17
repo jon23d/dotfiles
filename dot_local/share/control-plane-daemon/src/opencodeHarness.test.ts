@@ -660,6 +660,75 @@ describe('createOpencodeHarness', () => {
       await expect(handle.sendPrompt('hello there')).resolves.toBeUndefined();
       expect(messageCallCount).toBe(2);
     });
+
+    /**
+     * Review kan13-3 F7: identifying "the message we just sent" by exact text equality alone is
+     * ambiguous when an *earlier* message in the same session shares that exact text -- entirely
+     * plausible for a short reply like "yes"/"ok"/"continue". Live-confirmed against a real
+     * `opencode serve` (1.18.18) that `GET /session/:id/message` returns `info.id` and
+     * `info.time.created` (epoch ms) on every message; that timestamp is the real disambiguator.
+     * This reproduces the race the finding describes: attempt 1's poll response contains only the
+     * OLD duplicate-text message (the real just-sent message isn't visible yet -- the same
+     * visibility race the "polls for the just-sent message" test above covers) with a model that
+     * does NOT match the pin. A version of this check that matches on text alone would treat that
+     * stale message as "the one we just sent" and abort a perfectly healthy session on attempt 1.
+     * The fix must keep polling instead, and only match a message created at/after the send.
+     */
+    it('does not mistake an earlier message with identical text for the just-sent one (regression: F7)', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const beforeSend = Date.now();
+      let messageCallCount = 0;
+      let abortCalled = false;
+      server.use(
+        healthyHandler(),
+        agentAvailableHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+        http.post(`${BASE_URL}/session/ses_abc123/prompt_async`, () => new HttpResponse(null, { status: 204 })),
+        http.get(`${BASE_URL}/session/ses_abc123/message`, () => {
+          messageCallCount += 1;
+          const staleDuplicate = {
+            info: {
+              role: 'user',
+              // Deliberately the WRONG model -- if this stale message were mistaken for the
+              // just-sent one, verification would abort on a session that is actually healthy.
+              model: { providerID: 'litellm', modelID: 'small-model' },
+              time: { created: beforeSend - 60_000 },
+            },
+            parts: [{ type: 'text', text: 'yes' }],
+          };
+          if (messageCallCount === 1) {
+            // Attempt 1: the real just-sent message hasn't landed yet (visibility race) -- only
+            // the old duplicate-text message is visible.
+            return HttpResponse.json([staleDuplicate]);
+          }
+          const justSent = {
+            info: {
+              role: 'user',
+              model: { providerID: ORCHESTRATOR_MODEL_PROVIDER_ID, modelID: ORCHESTRATOR_MODEL_ID },
+              time: { created: beforeSend + 60_000 },
+            },
+            parts: [{ type: 'text', text: 'yes' }],
+          };
+          return HttpResponse.json([staleDuplicate, justSent]);
+        }),
+        http.post(`${BASE_URL}/session/ses_abc123/abort`, () => {
+          abortCalled = true;
+          return HttpResponse.json(true);
+        }),
+      );
+      const harness = createOpencodeHarness({
+        spawnProcess,
+        pickPort: async () => PORT,
+        promptVerifyMaxAttempts: 3,
+        promptVerifyIntervalMs: 1,
+      });
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+
+      await expect(handle.sendPrompt('yes')).resolves.toBeUndefined();
+      expect(abortCalled).toBe(false);
+      expect(messageCallCount).toBe(2);
+    });
   });
 
   it('stop() deletes only this session via the opencode API and never throws even if that fails', async () => {
