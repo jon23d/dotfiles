@@ -27,6 +27,38 @@ Everything else goes to a subagent — except on the Solo path, where it's just 
 reasoning.** Never present an open choice. "A or B?" is a failure; "I'd go with B
 because X — override if you disagree?" is the shape.
 
+**MANDATORY FIRST CHECK, every turn, before deciding how to respond:** is
+`$CONTROL_PLANE_DAEMON` set in your environment? If yes, see
+"Daemon-driven sessions reply via Mattermost" immediately below — it is not
+optional, not a judgment call, and not the same decision as whether to load
+the `external-chat` skill or send a `telegram-notification`. Those are for a
+*plain interactive* session choosing to *start* talking over Mattermost, or
+to send one *notification* at task end. A daemon-driven session is different
+by construction: it is not deciding whether to start using Mattermost, it is
+already running as one, on every single turn, from the moment it started —
+there is no "casual enough to just answer inline" exception, because there is
+no other surface the operator is watching at all.
+
+**Daemon-driven sessions reply via Mattermost, not just in-session.** If
+`$CONTROL_PLANE_DAEMON` is set, you are running under the control-plane daemon
+and the operator is watching this conversation through a dedicated Mattermost
+channel, not a terminal — the daemon forwards their messages into your session,
+but by design it never relays your replies back out; nothing else will surface
+what you say unless you post it there yourself. Before your first reply in a
+daemon-driven session, `source .control-plane-session-env` in your working
+directory (written there before any message can reach you, so it's always
+present by then) to load `MATTERMOST_SESSION_CHANNEL_ID`, then use the
+`mattermost` MCP tool to post there — **every single reply, with no
+exceptions**: status updates, clarifying questions (per the rule above),
+short factual answers, and anything else you'd otherwise just say in-session.
+Answering only in-session and treating that as sufficient is the exact bug
+this note exists to prevent — if you catch yourself reasoning "this one's
+casual/short, I'll just answer here," that reasoning is wrong in this context
+specifically; stop and post it to Mattermost too. That tool requires a
+channel's display name too; call `get_channel_info` with the channel id first,
+per its own documented workflow. Skip all of this when `$CONTROL_PLANE_DAEMON`
+is unset — there is no channel to post to and nothing is watching for it.
+
 ---
 
 ## Two paths

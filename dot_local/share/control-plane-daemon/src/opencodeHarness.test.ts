@@ -467,6 +467,20 @@ describe('createOpencodeHarness', () => {
         capturedDirectory = new URL(request.url).searchParams.get('directory');
         return new HttpResponse(null, { status: 204 });
       }),
+      // KAN-13 follow-up: sendPrompt verifies the pinned model actually resolved by re-reading the
+      // message it just sent -- see verifyPromptResolvedPinnedModel's doc comment. This message
+      // matches what was sent, under the pinned model, so verification passes silently.
+      http.get(`${BASE_URL}/session/ses_abc123/message`, () =>
+        HttpResponse.json([
+          {
+            info: {
+              role: 'user',
+              model: { providerID: ORCHESTRATOR_MODEL_PROVIDER_ID, modelID: ORCHESTRATOR_MODEL_ID },
+            },
+            parts: [{ type: 'text', text: 'hello there' }],
+          },
+        ]),
+      ),
     );
     const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
     const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
@@ -507,6 +521,145 @@ describe('createOpencodeHarness', () => {
     const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
 
     await expect(handle.sendPrompt('hello')).rejects.toThrow(/404/);
+  });
+
+  describe('sendPrompt model-pin verification (KAN-13 follow-up)', () => {
+    /**
+     * Reproduces the real incident live-diagnosed on the daemon's actual host: opencode accepted
+     * `prompt_async`'s explicit model pin with a `204` (no error, no `session.error` SSE event
+     * anywhere), but the message it actually created resolved under a different model entirely --
+     * the exact silent starting point for KAN-13's unbounded compaction loop, just one layer
+     * earlier than that ticket's own fix could see.
+     */
+    it('aborts the session and rejects loudly when opencode silently resolves the prompt to a different model', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      let abortedDirectory: string | null = null;
+      let abortCalled = false;
+      server.use(
+        healthyHandler(),
+        agentAvailableHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+        http.post(`${BASE_URL}/session/ses_abc123/prompt_async`, () => new HttpResponse(null, { status: 204 })),
+        http.get(`${BASE_URL}/session/ses_abc123/message`, () =>
+          HttpResponse.json([
+            {
+              info: { role: 'user', model: { providerID: 'litellm', modelID: 'small-model' } },
+              parts: [{ type: 'text', text: 'hello there' }],
+            },
+          ]),
+        ),
+        http.post(`${BASE_URL}/session/ses_abc123/abort`, ({ request }) => {
+          abortCalled = true;
+          abortedDirectory = new URL(request.url).searchParams.get('directory');
+          return HttpResponse.json(true);
+        }),
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+
+      await expect(handle.sendPrompt('hello there')).rejects.toThrow(
+        /silently resolved the pinned model litellm\/deepseek-v4-pro to litellm\/small-model/,
+      );
+      expect(abortCalled).toBe(true);
+      expect(abortedDirectory).toBe(dir);
+    });
+
+    it('does not abort or throw when the model matches -- only a confirmed mismatch is fatal', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      let abortCalled = false;
+      server.use(
+        healthyHandler(),
+        agentAvailableHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+        http.post(`${BASE_URL}/session/ses_abc123/prompt_async`, () => new HttpResponse(null, { status: 204 })),
+        http.get(`${BASE_URL}/session/ses_abc123/message`, () =>
+          HttpResponse.json([
+            {
+              info: {
+                role: 'user',
+                model: { providerID: ORCHESTRATOR_MODEL_PROVIDER_ID, modelID: ORCHESTRATOR_MODEL_ID },
+              },
+              parts: [{ type: 'text', text: 'hello there' }],
+            },
+          ]),
+        ),
+        http.post(`${BASE_URL}/session/ses_abc123/abort`, () => {
+          abortCalled = true;
+          return HttpResponse.json(true);
+        }),
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+
+      await expect(handle.sendPrompt('hello there')).resolves.toBeUndefined();
+      expect(abortCalled).toBe(false);
+    });
+
+    it('does not fail the send when verification itself cannot be completed (best-effort, not a confirmed mismatch)', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      server.use(
+        healthyHandler(),
+        agentAvailableHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+        http.post(`${BASE_URL}/session/ses_abc123/prompt_async`, () => new HttpResponse(null, { status: 204 })),
+        // No matching just-sent message in the list ever -- e.g. a race with another send.
+        // `promptVerifyMaxAttempts`/`promptVerifyIntervalMs` kept small here (rather than the
+        // real 5x300ms default) purely so this test doesn't spend 1.5s exhausting real retries.
+        http.get(`${BASE_URL}/session/ses_abc123/message`, () => HttpResponse.json([])),
+      );
+      const harness = createOpencodeHarness({
+        spawnProcess,
+        pickPort: async () => PORT,
+        promptVerifyMaxAttempts: 2,
+        promptVerifyIntervalMs: 1,
+      });
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+
+      await expect(handle.sendPrompt('hello there')).resolves.toBeUndefined();
+    });
+
+    it('polls for the just-sent message rather than giving up on the first empty check (cold-server-spawn regression)', async () => {
+      // Live-diagnosed (KAN-13 follow-up): immediately after a real, freshly-spawned opencode serve
+      // accepts prompt_async, GET /session/:id/message can still return zero results for a
+      // short window (observed: not yet visible at +0ms, reliably visible by ~+300ms). A
+      // verification check that only looked once would treat this normal window as "can't
+      // verify" on nearly every fresh-server send -- exactly when this check matters most.
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      let messageCallCount = 0;
+      server.use(
+        healthyHandler(),
+        agentAvailableHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })),
+        http.post(`${BASE_URL}/session/ses_abc123/prompt_async`, () => new HttpResponse(null, { status: 204 })),
+        http.get(`${BASE_URL}/session/ses_abc123/message`, () => {
+          messageCallCount += 1;
+          if (messageCallCount === 1) return HttpResponse.json([]); // not visible yet, first poll
+          return HttpResponse.json([
+            {
+              info: {
+                role: 'user',
+                model: { providerID: ORCHESTRATOR_MODEL_PROVIDER_ID, modelID: ORCHESTRATOR_MODEL_ID },
+              },
+              parts: [{ type: 'text', text: 'hello there' }],
+            },
+          ]);
+        }),
+      );
+      const harness = createOpencodeHarness({
+        spawnProcess,
+        pickPort: async () => PORT,
+        promptVerifyMaxAttempts: 3,
+        promptVerifyIntervalMs: 1,
+      });
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+
+      await expect(handle.sendPrompt('hello there')).resolves.toBeUndefined();
+      expect(messageCallCount).toBe(2);
+    });
   });
 
   it('stop() deletes only this session via the opencode API and never throws even if that fails', async () => {

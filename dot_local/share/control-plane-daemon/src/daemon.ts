@@ -121,7 +121,25 @@ export function createDaemon(config: DaemonConfig): Daemon {
   async function forwardToSessionIfApplicable(post: IncomingPost): Promise<void> {
     if (!context) return;
     const session = sessionStore.findByChannelId(post.channelId);
-    if (!session) return; // not a channel this daemon manages -- nothing to do
+    if (!session) {
+      // Not a channel this daemon manages -- deliberately no chat reply (KAN-13 follow-up: this
+      // codebase can't distinguish "genuinely unrelated channel" from "a session channel this
+      // daemon itself created, now untracked because sessionStore is in-memory-only and the
+      // daemon restarted since" -- see sessionStore.ts's own doc comment on why persistence
+      // across restarts is a deliberately separate, larger piece of work, not fixed here).
+      // Still loud at the log level, though: live-reproduced on this host (a real operator
+      // message into a real, just-created session channel landed here, completely silently,
+      // solely because the daemon had been restarted in between) -- that failure mode used to
+      // leave zero trace beyond the generic "received post" line above it, making it
+      // indistinguishable from "the daemon is fine and this channel just isn't ours."
+      logger.warn(
+        'received a post in a channel this daemon does not currently track as a session -- if this ' +
+          'channel was a session created before the daemon last restarted, its message was silently ' +
+          'not delivered (see sessionStore.ts: session/channel tracking does not survive a restart)',
+        { channelId: post.channelId, postId: post.id },
+      );
+      return;
+    }
     if (post.userId === context.botUserId) return; // never react to our own posts
     if (post.userId !== context.operatorUserId) return; // only the operator's messages are forwarded
 

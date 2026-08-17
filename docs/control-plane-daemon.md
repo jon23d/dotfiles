@@ -321,6 +321,62 @@ known, disclosed gap tracked separately as KAN-14 — the loud-failure
 mechanism above is real, but it can itself fail quietly over a long enough
 uptime.
 
+**New: `sendPrompt` verifies the pinned model actually took effect (KAN-13
+follow-up).** Live-diagnosed on the real daemon, after the fix above was
+already deployed: opencode can accept `prompt_async`'s explicit `model` pin
+with a `204` and silently resolve the message under a *different* model
+anyway (observed: `small-model` instead of the pinned `deepseek-v4-pro`) —
+no error, no `session.error` event, nothing that the KAN-13 notice above
+would ever catch. This reproduces the exact unbounded-compaction-loop
+symptom from a completely silent starting point; two real sessions on this
+host each spiraled into 300-900+ message loops this way with zero real
+responses ever produced. `sendPrompt` now re-reads the message it just sent
+(polling briefly — live-measured: not yet visible immediately after a
+freshly-spawned server's `204`, reliably visible within ~300ms) and, on a
+confirmed mismatch, aborts the session immediately and rejects loudly, which
+surfaces through the *existing* delivery-failure path
+(`forwardToSessionIfApplicable`'s catch in `daemon.ts`) as a real,
+operator-visible chat notice — the same mechanism a `404` from `prompt_async`
+itself already used. See `verifyPromptResolvedPinnedModel` in
+`opencodeHarness.ts`.
+
+**New: the Orchestrator agent now knows to reply via Mattermost for
+daemon-driven sessions.** Before this, nothing in `orchestrator.md`
+referenced `MATTERMOST_SESSION_CHANNEL_ID` or the daemon at all beyond the
+KAN-7 rename step — a daemon-forwarded message reached the session exactly
+like a normal prompt, so the agent just answered in-session, same as any
+plain interactive session, and the operator (watching Mattermost, since the
+daemon never relays replies itself) saw nothing. Live-confirmed the first
+fix attempt wasn't forceful enough on its own: the model treated "reply via
+Mattermost" as a judgment call similar to deciding whether to load the
+`external-chat` skill, and skipped it for a message it judged "casual."
+`orchestrator.md` now states this as a mandatory, unconditional first check
+of every turn (`$CONTROL_PLANE_DAEMON` set → every reply also goes to
+Mattermost, no exceptions), explicitly distinguished from `external-chat`
+(opt-in, for plain interactive sessions) and `telegram-notification`
+(one notification at task end) — verified live end-to-end afterward: a real
+session, real prompt, real `mattermost_create_post` tool call, real message
+landing in a real channel.
+
+**Known, disclosed gap (KAN-13 follow-up, open, not fixed here): session/
+channel routing does not survive a daemon restart.** `sessionStore.ts` and
+the live `sessionRuntime` handle registry are in-memory only by design (see
+that file's own doc comment) — a restart forgets every session it was
+tracking, including which Mattermost channel routes to which live handle.
+Live-reproduced on this host: a real operator message landed in a real,
+just-created session's channel seconds before an unrelated daemon restart
+(deploying an unrelated fix); the *next* message into that same channel was
+silently dropped — `forwardToSessionIfApplicable`'s `sessionStore.findByChannelId`
+lookup simply came back empty, and that branch returns without posting
+anything, indistinguishable from "not a channel this daemon manages." Fixed
+just enough to stop this being *invisible*: that branch now logs a `warn`
+line (`daemon.ts`) naming the channel and post, so it is at least
+discoverable via `journalctl` instead of leaving zero trace. The full fix —
+persisting session/channel state and reconciling live opencode sessions on
+restart — needs a new `HarnessAdapter` capability to *reattach* to an
+existing opencode session rather than only ever creating one, which is a
+separate, larger piece of work, not attempted here.
+
 ## Troubleshooting
 
 **Daemon won't start / restarts in a loop.** Check

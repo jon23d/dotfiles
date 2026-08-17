@@ -435,15 +435,16 @@ describe('createDaemon', () => {
       expect(restClient.createPost).not.toHaveBeenCalled();
     });
 
-    it('does not forward a message from a channel the daemon does not manage (not the DM, not a known session channel)', async () => {
+    it('does not forward a message from a channel the daemon does not manage (not the DM, not a known session channel), but logs it (KAN-13 follow-up)', async () => {
       const restClient = fakeRestClient();
       const sessionStore = fakeSessionStore({ findByChannelId: vi.fn().mockReturnValue(undefined) });
       const socket = fakeSocketClientFactory();
+      const logger = silentLogger();
       const daemon = createDaemon({
         restClient,
         stateStore: fakeStateStore(),
         sessionStore,
-        logger: silentLogger(),
+        logger,
         operatorEmail: 'jon23d@gmail.com',
         wsUrl: 'wss://mattermost.example.com/api/v4/websocket',
         token: 'tok-123',
@@ -453,7 +454,19 @@ describe('createDaemon', () => {
 
       await expect(socket.firePost(post({ channelId: 'some-unrelated-channel', message: 'hello' }))).resolves.toBeUndefined();
 
+      // No chat reply -- this codebase can't tell "genuinely unrelated channel" apart from "a
+      // session channel this daemon itself created, now untracked because it restarted" (see
+      // sessionStore.ts's doc comment: session/channel tracking is deliberately in-memory only).
       expect(restClient.createPost).not.toHaveBeenCalled();
+      // But NOT silent at the log level -- live-reproduced on the real host (KAN-13 follow-up): a
+      // real operator message into a real, just-created session channel was silently dropped
+      // purely because the daemon had restarted in between, with zero trace beyond the generic
+      // "received post" line. This is the fix for that: still discoverable via journalctl, even
+      // though the full fix (surviving a restart) is a separate, larger piece of work.
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('does not currently track as a session'),
+        expect.objectContaining({ channelId: 'some-unrelated-channel' }),
+      );
     });
 
     it('does not forward the bot\'s own post in a session channel', async () => {

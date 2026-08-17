@@ -58,6 +58,17 @@ export interface OpencodeHarnessConfig {
    * an unreadable environment (the real default, against a test double's fake pid, which has no
    * corresponding `/proc` entry -- see `fakeChildProcess`'s doc comment in the test file). */
   readChildEnviron?: (pid: number) => Promise<Record<string, string>>;
+  /**
+   * How many times `verifyPromptResolvedPinnedModel` (KAN-13 follow-up) polls
+   * `GET /session/:id/message` looking for the message `sendPrompt` just sent, before giving up
+   * and treating verification as inconclusive (best-effort, not a failure -- see that function's
+   * doc comment). Live-measured against a freshly-spawned real `opencode serve` process (the
+   * exact cold-start condition the `#6`/`#7` incident happened under): the just-sent message was
+   * not yet queryable at `+0ms` but reliably was by `+286ms`. Defaults (5 attempts, 300ms apart,
+   * ~1.5s worst case) give comfortable margin above that observed latency while staying bounded.
+   */
+  promptVerifyMaxAttempts?: number;
+  promptVerifyIntervalMs?: number;
 }
 
 /**
@@ -490,6 +501,140 @@ const sessionErrorEventSchema = z
   })
   .passthrough();
 
+/**
+ * `GET /session/:id/message`'s response shape (KAN-13 follow-up) -- only the fields
+ * `verifyPromptResolvedPinnedModel` below actually needs. `info.model` is present on `role:
+ * "user"` messages and reflects whatever model opencode actually resolved the message to, which
+ * -- live-confirmed -- can differ from what `prompt_async`'s own request body asked for, with no
+ * error of any kind surfaced anywhere else. `.passthrough()` throughout: this only needs to read
+ * a few fields, not fully model opencode's message schema.
+ */
+const promptMessageListSchema = z.array(
+  z
+    .object({
+      info: z
+        .object({
+          role: z.string(),
+          model: z.object({ providerID: z.string(), modelID: z.string() }).optional(),
+        })
+        .passthrough(),
+      parts: z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough()).optional(),
+    })
+    .passthrough(),
+);
+
+/**
+ * KAN-13 follow-up: verifies the message `sendPrompt` just sent actually resolved to the pinned
+ * `ORCHESTRATOR_MODEL_PROVIDER_ID`/`ORCHESTRATOR_MODEL_ID`, rather than trusting `prompt_async`'s
+ * `204` alone. Live-diagnosed on the real daemon: opencode's own `model` field on `prompt_async`
+ * can be silently ignored -- `res.ok` is `true`, no `session.error` SSE event ever fires -- and
+ * the message resolves under opencode's own default (`small-model`, 4096-token context) instead,
+ * which reproduces the exact KAN-13 unbounded-compaction-loop symptom from what looks, from the
+ * caller's side, like a completely successful send. Reproduced live: a shared `opencode serve`
+ * process, freshly spawned only seconds earlier (before its dynamic LiteLLM-backed provider/model
+ * list had settled -- see `ORCHESTRATOR_MODEL_ID`'s doc comment on why a startup-time
+ * `GET /config/providers` check can't catch this, it only echoes static `opencode.jsonc` content),
+ * accepted an explicit `{providerID:"litellm", modelID:"deepseek-v4-pro"}` pin on `prompt_async`
+ * and silently created the message under `small-model` instead. Two real sessions on this host
+ * (`#6`, `#7`) each spiraled into 300-900+ message compaction loops with zero real responses ever
+ * produced, and zero `session.error` events fired the entire time (confirmed via `journalctl` for
+ * the exact window) -- the daemon had no way to know anything was wrong. `verifyOrchestratorAgentAvailable`
+ * already guards the *agent* field this same way (at startup, since agent config is static);
+ * this guards the *model* field per-message, since -- unlike the agent list -- whether the pin
+ * "took" is only observable after the fact, per send.
+ *
+ * Deliberately best-effort on anything OTHER than a confirmed mismatch: `prompt_async` itself
+ * already returned `204`, so being unable to verify (network error, non-2xx, unexpected shape, or
+ * no matching just-sent message ever showing up within `promptVerifyMaxAttempts` attempts) is not
+ * the same as a confirmed failure, and must not turn an accepted send into a reported one. Only a
+ * *positive, confirmed* mismatch throws -- and even then only after a best-effort `abort` of the
+ * session, so this check doesn't just detect the KAN-13 loop, it prevents it from ever starting.
+ *
+ * Polls rather than checking once: live-measured against a freshly-spawned real `opencode serve`
+ * process (the exact cold-start condition sessions `#6`/`#7` hit) -- immediately after
+ * `prompt_async`'s `204`, the just-sent message was not yet visible via `GET /session/:id/message`
+ * at all (`0` results), and reliably was by roughly 300ms later. A single immediate check would
+ * report "no matching just-sent user message found" (the harmless, best-effort branch) on nearly
+ * every fresh-server send -- exactly the scenario this whole check exists to cover -- so it would
+ * verify almost nothing in practice. See `promptVerifyMaxAttempts`/`promptVerifyIntervalMs`'s doc
+ * comment on `OpencodeHarnessConfig` for the measured numbers behind the defaults.
+ */
+async function verifyPromptResolvedPinnedModel(
+  server: SharedServer,
+  folder: string,
+  sessionId: string,
+  message: string,
+  fetchImpl: typeof fetch,
+  logger: Logger,
+  maxAttempts: number,
+  intervalMs: number,
+): Promise<void> {
+  const directory = encodeURIComponent(folder);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let res: Response;
+    try {
+      res = await fetchImpl(`${server.baseUrl}/session/${encodeURIComponent(sessionId)}/message?directory=${directory}`);
+    } catch (err) {
+      logger.warn('could not verify the pinned model actually resolved (KAN-13 follow-up) -- opencode /session/:id/message unreachable', {
+        err,
+        sessionId,
+      });
+      return;
+    }
+    if (!res.ok) {
+      logger.warn('could not verify the pinned model actually resolved (KAN-13 follow-up) -- opencode /session/:id/message returned non-2xx', {
+        status: res.status,
+        sessionId,
+      });
+      return;
+    }
+    const parsed = promptMessageListSchema.safeParse(await res.json());
+    if (!parsed.success) {
+      logger.warn('could not verify the pinned model actually resolved (KAN-13 follow-up) -- unexpected /session/:id/message response shape', {
+        issues: parsed.error.issues,
+        sessionId,
+      });
+      return;
+    }
+    const justSent = [...parsed.data]
+      .reverse()
+      .find((m) => m.info.role === 'user' && (m.parts ?? []).some((p) => p.type === 'text' && p.text === message));
+    if (!justSent) {
+      if (attempt < maxAttempts) {
+        await sleep(intervalMs);
+        continue;
+      }
+      logger.warn('could not verify the pinned model actually resolved (KAN-13 follow-up) -- no matching just-sent user message found', {
+        sessionId,
+        attempts: attempt,
+      });
+      return;
+    }
+    const resolved = justSent.info.model;
+    if (resolved?.providerID === ORCHESTRATOR_MODEL_PROVIDER_ID && resolved.modelID === ORCHESTRATOR_MODEL_ID) {
+      return; // the pin took effect -- nothing to do
+    }
+    // Confirmed mismatch. Abort immediately, best-effort (never throws) -- this is what stops the
+    // KAN-13 loop from ever starting, not just what reports it -- then throw loudly so daemon.ts's
+    // existing failure path (forwardToSessionIfApplicable's catch) posts a real, operator-visible
+    // notice instead of the silent nothing this incident actually produced live.
+    await fetchImpl(`${server.baseUrl}/session/${encodeURIComponent(sessionId)}/abort?directory=${directory}`, {
+      method: 'POST',
+    }).catch((err) => {
+      logger.error('failed to abort session after detecting a silent model-pin mismatch (KAN-13 follow-up, best-effort, ignored)', {
+        err,
+        sessionId,
+      });
+    });
+    throw new Error(
+      `opencode silently resolved the pinned model ${ORCHESTRATOR_MODEL_PROVIDER_ID}/${ORCHESTRATOR_MODEL_ID} to ` +
+        `${resolved?.providerID ?? '<unknown>'}/${resolved?.modelID ?? '<unknown>'} instead (no error, no session.error event) -- ` +
+        `aborted the session to prevent an unbounded compaction loop (see KAN-13 for the underlying loop mechanics)`,
+    );
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -644,6 +789,8 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     readyTimeoutMs = 10_000,
     readyPollIntervalMs = 150,
     readChildEnviron = defaultReadChildEnviron,
+    promptVerifyMaxAttempts = 5,
+    promptVerifyIntervalMs = 300,
   } = config;
 
   // Caches the in-flight *promise*, not just its resolved value (review
@@ -932,6 +1079,19 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
             const text = await res.text().catch(() => '<unreadable body>');
             throw new Error(`opencode prompt_async failed: ${res.status} ${res.statusText} - ${text}`);
           }
+          // KAN-13 follow-up: `res.ok` only confirms opencode *accepted* the request -- see
+          // `verifyPromptResolvedPinnedModel`'s doc comment for why that is not the same as
+          // confirming it actually queued the message under the pinned model.
+          await verifyPromptResolvedPinnedModel(
+            server,
+            folder,
+            sessionId,
+            message,
+            fetchImpl,
+            logger,
+            promptVerifyMaxAttempts,
+            promptVerifyIntervalMs,
+          );
         },
 
         stop() {
