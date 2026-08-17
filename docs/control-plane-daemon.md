@@ -263,27 +263,63 @@ curl -s http://127.0.0.1:<port>/mcp | jq .
 ```
 
 Look for `"mattermost": {"status": "connected"}`. This is a plain read-only
-HTTP call — prefer it over reading `/proc/<pid>/environ` by hand, and
-**don't** verify MCP connectivity by sending an ad hoc chat prompt into a
-live Orchestrator session (see the known risk below).
+HTTP call — prefer it over reading `/proc/<pid>/environ` by hand, or
+spending a live chat turn on a session just to sanity-check connectivity.
 
 ## Known operational risks
 
-**The Orchestrator agent can get stuck in a severe compaction loop on
-out-of-workflow prompts.** Live-confirmed running unattended for 160+
-minutes, ~2.1M input tokens, sustained high CPU on the shared `opencode
-serve` process, on nothing more than an off-task prompt like "who are you"
-sent to a session running the `Orchestrator` agent. The loop never yields
-control back, so there's no in-band `stop` that can interrupt it — the only
-fix is `systemctl --user restart control-plane-daemon`, which (per the
-"Updating an existing install" note above) also kills every other session
-on that VM. Root cause isn't isolated yet; it's tracked as its own follow-up
-ticket, not fixed here.
+**Resolved: the Orchestrator agent's severe compaction loop (KAN-13).**
+Earlier operation of this daemon saw the Orchestrator agent get stuck in an
+unbounded compaction loop — one incident ran unattended for 160+ minutes,
+~2.1M input tokens, sustained high CPU on the shared `opencode serve`
+process, triggered by nothing more than an off-task prompt like "who are
+you." Root cause: `opencode.jsonc` declared several `litellm` models but
+pinned no default, so opencode's own default-model resolution silently
+picked `small-model` (a 4096-token-context model) for every fresh session.
+The Orchestrator agent's system prompt plus its MCP tool schemas cost far
+more than 4096 tokens on their own, so the very first turn overflowed;
+opencode's compaction/auto-continue handler can only shrink conversation
+history, not the fixed prompt/tool-schema overhead that was actually
+oversized, so every retry overflowed again identically, forever. Full
+root-cause writeup: `.agent/research-kan13.md`.
 
-**Practical takeaway:** avoid sending ad hoc, off-workflow prompts (like
-plain "who are you" sanity checks) to a session running the Orchestrator
-agent. If you need to check something about the environment or MCP
-connectivity, use the direct API checks above instead of a live chat turn.
+Fixed by pinning explicit models in `opencode.jsonc`: a top-level `"model"`
+key (`litellm/deepseek-v4-pro`, 1M-token context) as the default for every
+session, and a `"small_model"` key (`litellm/small-model`) so opencode's own
+cheap utility calls (e.g. title generation) use the small model on purpose
+rather than by silent accident. `opencodeHarness.ts` also now sends an
+explicit `model` field on every `createSession`/`sendPrompt` call as
+defense-in-depth, so a future mistake in `opencode.jsonc` can't as easily
+reintroduce this failure mode. **If you see anything that looks like this
+loop again** (a session stuck, CPU pegged on the shared `opencode serve`
+process, no reply) — suspect model configuration first: confirm
+`opencode.jsonc`'s `model` still names a real, large-context model for the
+configured `litellm` provider (`GET {LITELLM_URL}/models` and
+`/model/info` confirm what's actually available) before assuming it's a new
+bug.
+
+**New: session errors post into the session's own Mattermost channel
+(KAN-13).** When opencode reports a `session.error` event for a session (a
+provider/model rejection, auth failure, or similar mid-conversation
+failure), the daemon now posts a visible notice into that session's own
+channel instead of the error only ever reaching the daemon's structured
+log — see `HarnessSessionHandle.onError` (`src/harness.ts`) and its use in
+`src/startCommand.ts`. This is the mechanism that would surface a
+recurrence of the compaction-loop bug above, or any other model/provider
+failure, directly in chat rather than requiring someone to go looking in
+`journalctl`.
+
+**Known limitation of that notice (KAN-14, open, not fixed here):** it
+depends on the same `/event` SSE stream that KAN-7's rename detection uses,
+which does not reconnect once it drops — `opencodeHarness.ts`'s event-stream
+handling deliberately treats a dropped stream as a one-time terminal
+condition rather than retrying (see its KAN-7 comments). If that stream
+ever drops, the `onError` notice mechanism goes silently stale along with
+rename detection: no more error notices, no more rename-driven channel
+renames, and nothing surfaces that either has stopped working. This is a
+known, disclosed gap tracked separately as KAN-14 — the loud-failure
+mechanism above is real, but it can itself fail quietly over a long enough
+uptime.
 
 ## Troubleshooting
 
@@ -316,8 +352,12 @@ this hash list was hand-maintained and had drifted out of date; it's now a
 glob over the whole `src/` tree, so this specific failure mode shouldn't
 recur.)
 
-**A session seems completely unresponsive and won't `stop`.** See the
-Orchestrator compaction-loop risk above — `systemctl --user restart
+**A session seems completely unresponsive and won't `stop`.** Check
+`GET {LITELLM_URL}/models` and `opencode.jsonc`'s `model` key first — a
+session stuck with the shared `opencode serve` process pegged at high CPU
+matches the resolved Orchestrator compaction-loop bug (KAN-13, see "Known
+operational risks" above) and usually means the pinned default model has
+stopped resolving. If that checks out fine, `systemctl --user restart
 control-plane-daemon` is the escape hatch, at the cost of every session on
 that VM.
 
