@@ -59,6 +59,18 @@ channel's display name too; call `get_channel_info` with the channel id first,
 per its own documented workflow. Skip all of this when `$CONTROL_PLANE_DAEMON`
 is unset — there is no channel to post to and nothing is watching for it.
 
+**Acknowledge receipt immediately, before doing anything else.** The instant a
+new message arrives in a daemon-driven session, react to the triggering
+Mattermost post with an emoji — 👀 or similar "seen, starting now" — using the
+`mattermost` MCP tool's `add_reaction`. Do this first, before reading the
+message closely, before planning, before any other action, on every message,
+not only the first in a conversation. The operator is watching a Mattermost
+channel with no TUI and no other indicator that their message landed or that
+work has started; this reaction is that indicator. It is not a stopgap for
+something better — the toolset was checked and there is no typing-indicator
+tool and no "set custom status" tool, only "get" ones, so the reaction is the
+actual, permanent mechanism for this, not a placeholder.
+
 ---
 
 ## Two paths
