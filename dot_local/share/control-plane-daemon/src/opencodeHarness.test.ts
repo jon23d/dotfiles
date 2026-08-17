@@ -826,6 +826,92 @@ describe('createOpencodeHarness', () => {
     });
   });
 
+  describe('session.error surfacing (KAN-13)', () => {
+    it('logs loudly, including the sessionID and full error payload, when opencode reports this session errored', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const sse = controllableEventStream();
+      server.use(
+        healthyHandler(),
+        agentAvailableHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
+        sse.handler,
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+      const logger = silentLogger();
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger });
+      // The event stream only opens lazily on the first `onRename` call (KAN-7) -- production
+      // code (startCommand.ts) always registers one, so this mirrors the real trigger rather
+      // than opening the stream some other way a real session never would.
+      handle.onRename(vi.fn());
+
+      const providerError = { name: 'ProviderAuthError', data: { providerID: 'litellm', message: 'model not found' } };
+      sse.push({ type: 'session.error', properties: { sessionID: 'ses_abc123', error: providerError } });
+
+      await vi.waitFor(() =>
+        expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/session\.error/i), {
+          sessionID: 'ses_abc123',
+          error: providerError,
+        }),
+      );
+      sse.close();
+    });
+
+    it('ignores a session.error event reported for a different session sharing the same opencode server', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const sse = controllableEventStream();
+      let created = 0;
+      server.use(
+        healthyHandler(),
+        agentAvailableHandler(),
+        http.post(`${BASE_URL}/session`, () => {
+          created += 1;
+          return HttpResponse.json({ id: created === 1 ? 'ses_aaa' : 'ses_bbb', title: 'New session - x' });
+        }),
+        sse.handler,
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+      const dir2 = await mkdtemp(join(tmpdir(), 'control-plane-daemon-opencode-test-error-'));
+      const logger = silentLogger();
+      const handleA = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger });
+      await harness.start({ folder: dir2, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+      handleA.onRename(vi.fn());
+
+      sse.push({ type: 'session.error', properties: { sessionID: 'ses_bbb', error: { name: 'UnknownError' } } });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(logger.error).not.toHaveBeenCalled();
+      sse.close();
+      await rm(dir2, { recursive: true, force: true });
+    });
+
+    it('does not throw and keeps reading the stream when a session.error frame is malformed', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const sse = controllableEventStream();
+      server.use(
+        healthyHandler(),
+        agentAvailableHandler(),
+        http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
+        sse.handler,
+      );
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+      const logger = silentLogger();
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger });
+      const onRename = vi.fn();
+      handle.onRename(onRename);
+
+      // Missing `properties.sessionID` entirely -- schema mismatch, must be dropped silently
+      // rather than throwing and killing the stream-reading loop.
+      sse.push({ type: 'session.error', properties: {} });
+      sse.push({ type: 'session.updated', properties: { sessionID: 'ses_abc123', info: { title: 'still works' } } });
+
+      await vi.waitFor(() => expect(onRename).toHaveBeenCalledWith('still works'));
+      sse.close();
+    });
+  });
+
   describe('provisionChannelId (KAN-10)', () => {
     /**
      * There is no opencode API for injecting a per-session environment

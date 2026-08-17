@@ -249,6 +249,9 @@ export const ORCHESTRATOR_AGENT_NAME = 'Orchestrator';
  * other `litellm`-provider models here use. Matches the same model now
  * pinned as opencode.jsonc's top-level default (`"model":
  * "litellm/deepseek-v4-pro"`) -- update both together if this ever changes.
+ * `opencodeModelSync.test.ts` (review kan13-1 F4) fails loudly if they ever
+ * drift apart, so this is a checked invariant, not just a doc-comment
+ * promise.
  */
 export const ORCHESTRATOR_MODEL_PROVIDER_ID = 'litellm';
 export const ORCHESTRATOR_MODEL_ID = 'deepseek-v4-pro';
@@ -430,15 +433,59 @@ const sessionSchema = z.object({ id: z.string().min(1), title: z.string().option
 
 // The `/event` SSE stream (KAN-7) carries every event type opencode emits
 // (message parts, permissions, session lifecycle, ...) -- this only
-// describes the one shape this module cares about, `session.updated`.
-// `safeParse`-ing every frame against it and silently ignoring a mismatch is
-// the correct behavior for the other event types, not an error condition.
+// describes the two shapes this module cares about, `session.updated` and
+// `session.error` (KAN-13, see `handleRawSseFrame`). `safeParse`-ing every
+// frame against both and silently ignoring a mismatch on both is the correct
+// behavior for the other event types, not an error condition.
 const sessionUpdatedEventSchema = z
   .object({
     type: z.literal('session.updated'),
     properties: z.object({
       sessionID: z.string().min(1),
       info: z.object({ title: z.string() }).passthrough(),
+    }),
+  })
+  .passthrough();
+
+/**
+ * `session.error` (KAN-13): opencode's own async, out-of-band signal that a
+ * session's in-flight request failed -- a provider auth failure, a context
+ * overflow, or (the specific risk this schema exists for) the pinned
+ * `ORCHESTRATOR_MODEL_ID`/`ORCHESTRATOR_MODEL_PROVIDER_ID` no longer
+ * resolving to a real, usable model on LiteLLM's side. `properties.error`'s
+ * real shape is a union of several distinct error types (`ProviderAuthError`,
+ * `ContextOverflowError`, `APIError`, ...; live-confirmed via a real server's
+ * `GET /doc`, opencode 1.18.18) -- deliberately not modeled field-by-field
+ * here. This handler only needs to detect that a failure happened and log its
+ * full payload, not branch on which kind it was, so `z.record` capturing
+ * whatever shape shows up is sufficient and avoids this schema silently
+ * falling out of sync with opencode's own error-type union as it evolves.
+ *
+ * Chosen deliberately over a startup-time "is this model currently listed"
+ * check (the same shape as `verifyOrchestratorAgentAvailable` above, for the
+ * `agent` field): live-checked against a real standalone `opencode serve`
+ * (1.18.18) that opencode's own `GET /config/providers` and `GET /provider`
+ * endpoints both only echo back the models *statically declared* in
+ * `opencode.jsonc` -- confirmed by inspecting a live response and seeing
+ * `deepseek-v4-pro` listed under the `litellm` provider regardless of
+ * LiteLLM's actual current backing state. That's exactly the check that
+ * would NOT have caught this ticket's own root cause: `glm-5.2` was declared
+ * in `opencode.jsonc` yet absent from LiteLLM's real model list the whole
+ * time (see `.agent/memory-candidates/kan13-compaction-loop-fix.md` item 3).
+ * A one-time startup probe against LiteLLM directly would still race the
+ * same item's observation that LiteLLM's live model set changes minutes
+ * apart -- so surfacing the actual async failure, whenever it happens, is
+ * the fix that is both simpler and structurally correct, matching this
+ * epic's "never fail silently" principle the same way
+ * `verifyOrchestratorAgentAvailable` already does for a *static*
+ * misconfiguration.
+ */
+const sessionErrorEventSchema = z
+  .object({
+    type: z.literal('session.error'),
+    properties: z.object({
+      sessionID: z.string().min(1),
+      error: z.unknown(),
     }),
   })
   .passthrough();
@@ -487,6 +534,14 @@ function isAbortError(err: unknown): boolean {
 interface RenameState {
   lastTitle: string;
   callbacks: Array<(identifier: string) => void>;
+  /** This session's own logger, as passed to `start()` (KAN-13). Session.error
+   * handling in `handleRawSseFrame` below looks it up here, per session,
+   * rather than using the one generic `logger` `readEventStream` was opened
+   * with -- the event stream is shared across every session on this shared
+   * server (KAN-7), so a session B error logged through session A's logger
+   * would carry session A's context (channel id, correlation fields, ...) on
+   * a log line that is actually about session B. */
+  logger: Logger;
 }
 
 function handleRawSseFrame(rawEvent: string, renameState: Map<string, RenameState>, logger: Logger): void {
@@ -508,15 +563,38 @@ function handleRawSseFrame(rawEvent: string, renameState: Map<string, RenameStat
   }
 
   const event = sessionUpdatedEventSchema.safeParse(parsed);
-  if (!event.success) return; // most frames on this stream aren't session.updated -- expected, not an error
+  if (event.success) {
+    const { sessionID, info } = event.data.properties;
+    const state = renameState.get(sessionID);
+    if (!state) return; // a session this harness isn't tracking (e.g. opened via the opencode TUI directly)
+    if (info.title === state.lastTitle) return; // no real change (e.g. a cost/tokens-only update replaying the same title)
 
-  const { sessionID, info } = event.data.properties;
-  const state = renameState.get(sessionID);
-  if (!state) return; // a session this harness isn't tracking (e.g. opened via the opencode TUI directly)
-  if (info.title === state.lastTitle) return; // no real change (e.g. a cost/tokens-only update replaying the same title)
+    state.lastTitle = info.title;
+    for (const cb of state.callbacks) cb(info.title);
+    return;
+  }
 
-  state.lastTitle = info.title;
-  for (const cb of state.callbacks) cb(info.title);
+  const errorEvent = sessionErrorEventSchema.safeParse(parsed);
+  if (errorEvent.success) {
+    const { sessionID, error } = errorEvent.data.properties;
+    const state = renameState.get(sessionID);
+    if (!state) return; // a session this harness isn't tracking (e.g. opened via the opencode TUI directly)
+    // KAN-13: this is opencode's own async, out-of-band failure signal -- see
+    // `sessionErrorEventSchema`'s doc comment for why this, not a startup-time
+    // model-availability check, is the fix. Loud on purpose: a prompt sent
+    // against a pinned model/provider that stops resolving (e.g. LiteLLM's
+    // model list changing, as observed live during this ticket's own
+    // investigation) fails here, not silently. Uses this session's own
+    // `state.logger`, not the generic `logger` param above -- see
+    // `RenameState.logger`'s doc comment for why (this stream is shared
+    // across every session on this shared server).
+    state.logger.error(
+      'opencode session.error event -- the session\'s in-flight request failed (provider/model rejection, auth failure, or similar)',
+      { sessionID, error },
+    );
+    return;
+  }
+  // most frames on this stream are neither session.updated nor session.error -- expected, not an error
 }
 
 /** Owns the single shared `opencode serve` process (spawned lazily) and every
@@ -811,7 +889,7 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
       await validateFolder(folder);
       const server = await ensureSharedServer(logger, operatorUserId);
       const { id: sessionId, title: initialTitle } = await createSession(server, folder);
-      server.renameState.set(sessionId, { lastTitle: initialTitle, callbacks: [] });
+      server.renameState.set(sessionId, { lastTitle: initialTitle, callbacks: [], logger });
 
       const handle: HarnessSessionHandle = {
         async sendPrompt(message) {
