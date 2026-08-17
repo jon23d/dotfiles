@@ -28,12 +28,19 @@ function silentLogger(): Logger {
 
 /** A minimal fake child process -- mirrors socketClient.test.ts's WebSocketLike fakes: an
  * EventEmitter standing in for the real node:child_process handle, with test-only helpers
- * to simulate the events opencodeHarness.ts actually listens for. */
+ * to simulate the events opencodeHarness.ts actually listens for.
+ *
+ * `pid` is a fixed fake value (KAN-12) -- it has no corresponding real `/proc/<pid>/environ`
+ * entry, which is exactly the "unreadable" case `verifyGeneralEnvironmentAvailable`'s default
+ * real `readChildEnviron` degrades gracefully on (warn, not throw). That's what lets the ~30
+ * other tests reaching `spawnSharedServer` through this one factory pass unmodified: none of
+ * them inject a fake `readChildEnviron`, so they all hit the unreadable branch and warn. */
 function fakeChildProcess(): SpawnedProcessLike & { emitExit(code: number | null): void; emitStderr(chunk: string): void } {
   const emitter = new EventEmitter();
   const stderrEmitter = new EventEmitter();
   const proc = {
     stderr: stderrEmitter,
+    pid: 12345,
     on: (event: 'exit', listener: (code: number | null) => void) => {
       emitter.on(event, listener);
       return proc;
@@ -141,9 +148,16 @@ describe('createOpencodeHarness', () => {
     const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
 
     expect(handle).toBeDefined();
+    // KAN-12: spawned through an interactive zsh shell (`zsh -ic 'exec opencode serve ...'`),
+    // not the `opencode` binary directly, so the child inherits whatever an ordinary
+    // interactive shell picks up (configs.env, sourced only via .zshrc) instead of the daemon
+    // hand-forwarding individual env vars one at a time.
     expect(spawnProcess).toHaveBeenCalledWith(
-      'opencode',
-      expect.arrayContaining(['serve', '--port', String(PORT), '--hostname', '127.0.0.1']),
+      'zsh',
+      expect.arrayContaining([
+        '-ic',
+        expect.stringMatching(new RegExp(`exec opencode serve --port '?${PORT}'? --hostname '?127\\.0\\.0\\.1'?`)),
+      ]),
       expect.objectContaining({}),
     );
     expect(createdWithDirectory).toBe(dir);
@@ -235,6 +249,64 @@ describe('createOpencodeHarness', () => {
     });
   });
 
+  describe('general environment availability check (KAN-12)', () => {
+    /**
+     * Runs once per shared-server spawn, right after the orchestrator-agent check, and reads
+     * the spawned child's *real* resolved environment (via the injectable `readChildEnviron`)
+     * to confirm the interactive-zsh-shell fix actually worked -- i.e. that `configs.env` was
+     * genuinely sourced into the child, not just that the zsh wrapper command was constructed
+     * correctly (that part is covered by the top-level "spawns ... zsh ..." test above).
+     * `MATTERMOST_MCP_URL` is the sentinel: it's the literal reported symptom, and `configs.env`
+     * today only defines `TOOLSETS` and `MATTERMOST_MCP_URL`, with the latter being the one
+     * every downstream MCP consumer actually depends on.
+     */
+    it('throws naming configs.env and kills the child when the spawned child\'s real environment is confirmably missing MATTERMOST_MCP_URL', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      const createSessionHandler = vi.fn(() => HttpResponse.json({ id: 'ses_abc123' }));
+      server.use(healthyHandler(), agentAvailableHandler(), http.post(`${BASE_URL}/session`, createSessionHandler));
+      const readChildEnviron = vi.fn().mockResolvedValue({ PATH: '/usr/bin' }); // no MATTERMOST_MCP_URL
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT, readChildEnviron });
+
+      await expect(harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() })).rejects.toThrow(
+        /MATTERMOST_MCP_URL.*configs\.env|configs\.env.*MATTERMOST_MCP_URL/is,
+      );
+      expect(createSessionHandler).not.toHaveBeenCalled();
+      // Same "never limp along" posture as verifyOrchestratorAgentAvailable above -- a
+      // confirmed, not merely suspected, misconfiguration kills the shared child rather than
+      // leaving an orphaned process holding its port (nothing else keeps a reference to it once
+      // ensureSharedServer's catch clears sharedPromise).
+      expect(child.kill).toHaveBeenCalled();
+    });
+
+    it('succeeds and creates the session when the spawned child\'s real environment does contain MATTERMOST_MCP_URL', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      server.use(healthyHandler(), agentAvailableHandler(), http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })));
+      const readChildEnviron = vi.fn().mockResolvedValue({ PATH: '/usr/bin', MATTERMOST_MCP_URL: 'https://mattermost.example/plugins/mcp' });
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT, readChildEnviron });
+
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+
+      expect(handle).toBeDefined();
+      expect(child.kill).not.toHaveBeenCalled();
+    });
+
+    it('logs a warn (not a throw) and still succeeds when the child\'s environment cannot be read at all -- e.g. a test double\'s fake pid with no real /proc entry', async () => {
+      const child = fakeChildProcess(); // pid 12345, no corresponding real /proc/12345/environ
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      server.use(healthyHandler(), agentAvailableHandler(), http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })));
+      const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT }); // default real readChildEnviron
+      const logger = silentLogger();
+
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger });
+
+      expect(handle).toBeDefined();
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/environ/i), expect.objectContaining({ pid: 12345 }));
+    });
+  });
+
   it('spawns `opencode serve` with a distinguishing env var so an in-session agent can tell it is running under the daemon (kan7-2 F4)', async () => {
     const child = fakeChildProcess();
     const spawnProcess = vi.fn().mockReturnValue(child);
@@ -248,7 +320,7 @@ describe('createOpencodeHarness', () => {
     await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
 
     expect(spawnProcess).toHaveBeenCalledWith(
-      'opencode',
+      'zsh',
       expect.any(Array),
       expect.objectContaining({ env: expect.objectContaining({ [CONTROL_PLANE_DAEMON_ENV_VAR]: '1' }) }),
     );
@@ -268,7 +340,7 @@ describe('createOpencodeHarness', () => {
       await harness.start({ folder: dir, operatorUserId: 'operator-42', logger: silentLogger() });
 
       expect(spawnProcess).toHaveBeenCalledWith(
-        'opencode',
+        'zsh',
         expect.any(Array),
         expect.objectContaining({ env: expect.objectContaining({ [MATTERMOST_OPERATOR_USER_ID_ENV_VAR]: 'operator-42' }) }),
       );
@@ -294,7 +366,7 @@ describe('createOpencodeHarness', () => {
 
       expect(spawnProcess).toHaveBeenCalledTimes(1);
       expect(spawnProcess).toHaveBeenCalledWith(
-        'opencode',
+        'zsh',
         expect.any(Array),
         expect.objectContaining({ env: expect.objectContaining({ [MATTERMOST_OPERATOR_USER_ID_ENV_VAR]: 'operator-42' }) }),
       );
@@ -501,6 +573,95 @@ describe('createOpencodeHarness', () => {
 
     await expect(harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() })).rejects.toThrow(/ready|timed out/i);
     expect(child.kill).toHaveBeenCalled();
+  });
+
+  describe('health-check poll attempt timeout (regression: live-diagnosed incident during KAN-12 verification)', () => {
+    /**
+     * Reproduces the live incident: a single `/global/health` `fetch()` call hung (in
+     * production, consistent with Node/undici's default fetch timeout, ~300s) instead of
+     * failing fast, and the loop's deadline was only ever checked *between* attempts -- so one
+     * hung call blew straight through the entire `readyTimeoutMs` budget while the underlying
+     * `opencode serve` process was, the whole time, genuinely healthy. This fake `fetchImpl`
+     * never resolves or rejects on its own, simulating exactly that hang; the fix must bound
+     * each individual attempt so the loop still gives up close to its own configured deadline.
+     */
+    it('gives up at approximately its own configured readyTimeoutMs when a health-check fetch hangs, instead of waiting on it indefinitely', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      // Never settles on its own -- exactly like the real hung `fetch()` call in the live
+      // incident, whose own signal (undici's default fetch timeout) took ~318s to fire. This
+      // fake only settles if something else (the fix under test) actually aborts its signal --
+      // a real, unfixed `fetch()` calls with no signal passed at all would never abort here,
+      // which is precisely why this test would hang without the fix.
+      const fetchImpl = vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+          }),
+      );
+      const readyTimeoutMs = 300;
+      const harness = createOpencodeHarness({
+        spawnProcess,
+        pickPort: async () => PORT,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        readyTimeoutMs,
+        readyPollIntervalMs: 10,
+      });
+
+      const startedAt = Date.now();
+      await expect(
+        harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() }),
+      ).rejects.toThrow(/ready|timed out/i);
+      const elapsedMs = Date.now() - startedAt;
+
+      // Generous upper bound (well under vitest's 5s default per-test timeout) -- the point is
+      // "close to readyTimeoutMs", not waiting on the hung call, which would never resolve at all.
+      expect(elapsedMs).toBeLessThan(2_000);
+      expect(child.kill).toHaveBeenCalled();
+    });
+
+    /**
+     * The distinction this incident showed was missing: a poll attempt that has to be aborted
+     * because it hung is a much more interesting signal than an ordinary connection-refused
+     * failure while the process is still booting -- a repeated abort-timeout in the logs would
+     * have made this exact incident diagnosable without live `curl` debugging. Simulates one
+     * hung attempt (aborted) followed by a normal healthy response, and asserts the abort is
+     * logged distinctly rather than being silently swallowed by the same blanket catch as a
+     * plain connection-refused.
+     */
+    it('logs distinctly when a poll attempt is aborted for hanging, then still succeeds once the server responds normally', async () => {
+      const child = fakeChildProcess();
+      const spawnProcess = vi.fn().mockReturnValue(child);
+      server.use(healthyHandler(), agentAvailableHandler(), http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123' })));
+      let healthCallCount = 0;
+      const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+        const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+        if (href.endsWith('/global/health')) {
+          healthCallCount += 1;
+          if (healthCallCount === 1) {
+            // First attempt hangs until aborted -- never settles on its own.
+            return new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+            });
+          }
+        }
+        return fetch(url, init); // delegate to the real (MSW-intercepted) fetch for everything else
+      }) as typeof fetch;
+      const logger = silentLogger();
+      const harness = createOpencodeHarness({
+        spawnProcess,
+        pickPort: async () => PORT,
+        fetchImpl,
+        readyPollIntervalMs: 10,
+      });
+
+      const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger });
+
+      expect(handle).toBeDefined();
+      expect(healthCallCount).toBeGreaterThanOrEqual(2);
+      // Distinct from the plain "keep polling" silence -- an abort-timeout is logged loudly.
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/abort|timed out|hung/i), expect.anything());
+    }, 10_000);
   });
 
   describe('onRename (KAN-7)', () => {

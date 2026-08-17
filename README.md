@@ -22,6 +22,15 @@ chezmoi init --apply jon23d
 - node
 - ripgrep
 
+## Control-plane daemon
+
+Runs coding-agent sessions (`opencode` today) on a VM under remote control
+from a Mattermost DM. See
+[`docs/control-plane-daemon.md`](docs/control-plane-daemon.md) for the full
+operator's guide: installing/updating it, the `start`/`stop`/`list`/`help`
+command surface, the environment/config model, how to verify it's working,
+and troubleshooting.
+
 ## Secrets
 
 Secrets are kept in a single file, `~/.config/secrets.env`, encrypted as one opaque

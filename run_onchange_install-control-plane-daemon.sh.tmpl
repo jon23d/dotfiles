@@ -14,20 +14,24 @@ set -e
 # Forgetting to list a file here means editing it would silently NOT
 # redeploy -- exactly the kind of quiet failure KAN-2 exists to avoid.
 #
+# The src/ tree is walked and hashed automatically (via `glob` over
+# src/** filtered to non-directories) rather than enumerated file-by-file,
+# specifically so that adding a NEW file under src/ (KAN-5's
+# opencodeHarness.ts landed *after* the list below was written, and its
+# absence from a hand-maintained list is exactly what let a real code
+# change silently fail to redeploy) is automatically covered without
+# anyone having to remember to add a line here.
+#
 #   service:  {{ include "dot_config/systemd/user/control-plane-daemon.service" | sha256sum }}
 #   package:  {{ include "dot_local/share/control-plane-daemon/package.json" | sha256sum }}
 #   lockfile: {{ include "dot_local/share/control-plane-daemon/package-lock.json" | sha256sum }}
-#   daemon:   {{ include "dot_local/share/control-plane-daemon/src/daemon.ts" | sha256sum }}
-#   env:      {{ include "dot_local/share/control-plane-daemon/src/env.ts" | sha256sum }}
-#   index:    {{ include "dot_local/share/control-plane-daemon/src/index.ts" | sha256sum }}
-#   logger:   {{ include "dot_local/share/control-plane-daemon/src/logger.ts" | sha256sum }}
-#   rest:     {{ include "dot_local/share/control-plane-daemon/src/mattermostRestClient.ts" | sha256sum }}
-#   router:   {{ include "dot_local/share/control-plane-daemon/src/messageRouter.ts" | sha256sum }}
-#   backoff:  {{ include "dot_local/share/control-plane-daemon/src/reconnectBackoff.ts" | sha256sum }}
-#   resolve:  {{ include "dot_local/share/control-plane-daemon/src/resolveDmChannel.ts" | sha256sum }}
-#   socket:   {{ include "dot_local/share/control-plane-daemon/src/socketClient.ts" | sha256sum }}
-#   state:    {{ include "dot_local/share/control-plane-daemon/src/stateStore.ts" | sha256sum }}
-#   types:    {{ include "dot_local/share/control-plane-daemon/src/types.ts" | sha256sum }}
+{{ $srcDir := .chezmoi.sourceDir -}}
+{{ $daemonSrc := printf "%s/dot_local/share/control-plane-daemon/src" $srcDir -}}
+{{ range $f := glob (printf "%s/**" $daemonSrc) -}}
+{{ if not (stat $f).isDir -}}
+#   src/{{ trimPrefix (printf "%s/" $daemonSrc) $f }}: {{ include (trimPrefix (printf "%s/" $srcDir) $f) | sha256sum }}
+{{ end -}}
+{{ end -}}
 
 [ "$(uname)" = "Linux" ] || exit 0
 command -v systemctl >/dev/null 2>&1 || exit 0

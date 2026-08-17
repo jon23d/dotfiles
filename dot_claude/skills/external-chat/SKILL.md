@@ -40,9 +40,11 @@ server if available, else the raw REST API.
 
 **Both paths**: host/token — derive the REST host from `$MATTERMOST_MCP_URL`
 (strip the MCP-specific path, keep scheme+host); reuse `$MATTERMOST_MCP_TOKEN`
-as the Bearer token. **Known gap, daemon-spawned only**: `$MATTERMOST_MCP_URL`
-isn't currently set in that environment (tracked separately) — this and the
-`mattermost` MCP server itself won't work there until that's fixed.
+as the Bearer token. As of KAN-12, daemon-spawned sessions get both the same
+way any interactive shell does: the daemon spawns its shared `opencode serve`
+process through `zsh -ic`, which sources `~/.config/configs.env` (and
+`secrets.env`) into it, so `$MATTERMOST_MCP_URL` and the `mattermost` MCP
+server work there too — no separate resolution path needed.
 
 **Start the watcher** via the `Monitor` tool (not plain `Bash
 run_in_background`), so new messages surface as events instead of something
