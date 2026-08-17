@@ -1,5 +1,18 @@
 {
 	"$schema": "https://opencode.ai/config.json",
+  // KAN-13: explicit default model, in "provider/model" form per opencode's config schema
+  // (dot_config/opencode.json's own $schema, `Config.model`). Without this, opencode's own
+  // default-model resolution for the `litellm` provider silently picked `small-model`
+  // (4096-token context), which the Orchestrator agent's system prompt + MCP tool schemas
+  // always overflowed -- causing an unbounded compaction loop (LiteLLM correctly rejects the
+  // oversized request, but opencode's auto-continue handler can only shrink conversation
+  // history, not the fixed prompt/tool-schema overhead that was actually oversized here). Full
+  // root cause: .agent/research-kan13.md. Confirmed `deepseek-v4-pro` live via LiteLLM's own
+  // `GET {LITELLM_URL}/models` and `GET {LITELLM_URL}/model/info` -- 1,000,000-token input
+  // context / 8,192-token max output, routed to the real DeepSeek API
+  // (`custom_llm_provider: "deepseek"`), not the local LM Studio backend the other models here
+  // use.
+  "model": "litellm/deepseek-v4-pro",
   "subagent_depth": 4,
    "permission": {
     "*": "allow",
@@ -59,13 +72,13 @@
 			"name": "LiteLLM",
 			"npm": "@ai-sdk/openai-compatible",
 			"models": {
-				"glm-5.2": {
-					"name": "glm-5.2",
-					"limit": {
-						"context": 650000,
-						"output": 100000
-					}
-				},
+        "deepseek-v4-pro": {
+          "name": "deepseek-v4-pro",
+          "limit": {
+            "context": 1000000,
+            "output": 8192
+          }
+        },
         "deepseek-v4-flash": {
           "name": "deepseek-v4-flash",
           "limit": {

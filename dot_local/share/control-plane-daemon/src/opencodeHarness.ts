@@ -217,6 +217,42 @@ async function ensureSessionEnvFileGitignored(folder: string, logger: Logger): P
  */
 export const ORCHESTRATOR_AGENT_NAME = 'Orchestrator';
 
+/**
+ * Defense-in-depth model pin (KAN-13). `dot_config/opencode/opencode.jsonc`
+ * declares several models under the `litellm` provider but -- until this
+ * fix -- pinned no default. With no `model` field on either `POST /session`
+ * or `POST /session/:id/prompt_async`, opencode's own default-model
+ * resolution silently picked `small-model` (4096-token context), which the
+ * Orchestrator agent's system prompt + MCP tool schemas (14,400-63,000
+ * tokens depending on config) always overflows on the very first turn --
+ * LiteLLM correctly rejects the oversized request, and opencode's
+ * compaction/auto-continue handler loops forever trying to shrink
+ * conversation history that isn't the actual oversized part (full root
+ * cause: `.agent/research-kan13.md`). Sending this field explicitly on both
+ * calls means the daemon no longer depends solely on opencode.jsonc's
+ * default resolution -- a future config regression there degrades back to
+ * "wrong model" at worst, not "silent infinite loop."
+ *
+ * `POST /session` and `POST /session/:id/prompt_async` were confirmed via a
+ * live server's `GET /doc` (opencode 1.18.18) to each accept `model` with a
+ * *different* shape -- do not assume they match:
+ *   - `POST /session`: `{ id: string, providerID: string, variant?: string }`
+ *     (required: `id`, `providerID`)
+ *   - `POST /session/:id/prompt_async`: `{ providerID: string, modelID: string }`
+ *     (required: `providerID`, `modelID`) -- note `modelID`, not `id`.
+ *
+ * `ORCHESTRATOR_MODEL_ID` ('deepseek-v4-pro') was confirmed live against
+ * LiteLLM's real proxy (`GET {LITELLM_URL}/models` and `GET
+ * {LITELLM_URL}/model/info`, 2026-08-17) -- 1,000,000-token input context,
+ * 8,192-token max output, routed to the real DeepSeek API
+ * (`custom_llm_provider: "deepseek"`), not the local LM Studio backend the
+ * other `litellm`-provider models here use. Matches the same model now
+ * pinned as opencode.jsonc's top-level default (`"model":
+ * "litellm/deepseek-v4-pro"`) -- update both together if this ever changes.
+ */
+export const ORCHESTRATOR_MODEL_PROVIDER_ID = 'litellm';
+export const ORCHESTRATOR_MODEL_ID = 'deepseek-v4-pro';
+
 const agentListSchema = z.array(z.object({ name: z.string() }).passthrough());
 
 /**
@@ -683,7 +719,13 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
     const res = await fetchImpl(`${server.baseUrl}/session?directory=${encodeURIComponent(folder)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent: ORCHESTRATOR_AGENT_NAME }),
+      body: JSON.stringify({
+        agent: ORCHESTRATOR_AGENT_NAME,
+        // KAN-13 defense-in-depth: see ORCHESTRATOR_MODEL_ID's doc comment. `POST /session`'s
+        // `model` shape is `{ id, providerID }` -- distinct from prompt_async's `{ providerID,
+        // modelID }` below, confirmed via a live server's `GET /doc`.
+        model: { id: ORCHESTRATOR_MODEL_ID, providerID: ORCHESTRATOR_MODEL_PROVIDER_ID },
+      }),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '<unreadable body>');
@@ -780,7 +822,14 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
               headers: { 'Content-Type': 'application/json' },
               // `agent` here, not just on `POST /session`, is what actually selects the running
               // agent for this message -- see ORCHESTRATOR_AGENT_NAME's doc comment (KAN-9).
-              body: JSON.stringify({ agent: ORCHESTRATOR_AGENT_NAME, parts: [{ type: 'text', text: message }] }),
+              // `model` here (KAN-13 defense-in-depth) is what actually resolves the model for
+              // this specific request -- see ORCHESTRATOR_MODEL_ID's doc comment. Note the shape
+              // is `{ providerID, modelID }`, NOT `{ id, providerID }` like `POST /session` uses.
+              body: JSON.stringify({
+                agent: ORCHESTRATOR_AGENT_NAME,
+                model: { providerID: ORCHESTRATOR_MODEL_PROVIDER_ID, modelID: ORCHESTRATOR_MODEL_ID },
+                parts: [{ type: 'text', text: message }],
+              }),
             },
           );
           if (!res.ok) {

@@ -10,6 +10,8 @@ import {
   MATTERMOST_OPERATOR_USER_ID_ENV_VAR,
   MATTERMOST_SESSION_CHANNEL_ID_ENV_VAR,
   ORCHESTRATOR_AGENT_NAME,
+  ORCHESTRATOR_MODEL_ID,
+  ORCHESTRATOR_MODEL_PROVIDER_ID,
   SESSION_ENV_FILE_NAME,
   createOpencodeHarness,
 } from './opencodeHarness.js';
@@ -184,7 +186,16 @@ describe('createOpencodeHarness', () => {
       // equal (undefined-valued keys are ignored), which would let this test pass even if
       // `ORCHESTRATOR_AGENT_NAME` failed to import (vitest's transform doesn't type-check, so a
       // missing export silently becomes `undefined` here rather than a compile error).
-      expect(capturedBody).toStrictEqual({ agent: ORCHESTRATOR_AGENT_NAME });
+      // KAN-13 defense-in-depth: with no `model` field sent on either endpoint, opencode's own
+      // default-model resolution silently picked a 4096-token-context model, which the
+      // Orchestrator's system prompt + MCP tool schemas always overflowed, causing an unbounded
+      // compaction loop (see .agent/research-kan13.md). `POST /session`'s `model` shape is
+      // `{ id, providerID }` per a live server's `GET /doc` (opencode 1.18.18) -- distinct from
+      // prompt_async's `{ providerID, modelID }` shape, covered separately below.
+      expect(capturedBody).toStrictEqual({
+        agent: ORCHESTRATOR_AGENT_NAME,
+        model: { id: ORCHESTRATOR_MODEL_ID, providerID: ORCHESTRATOR_MODEL_PROVIDER_ID },
+      });
     });
 
     it('rejects loudly and never creates a session when opencode has no agent matching the confirmed identifier, rather than silently falling back', async () => {
@@ -469,7 +480,15 @@ describe('createOpencodeHarness', () => {
     // even though the session itself was created with `agent: "Orchestrator"` -- confirmed by
     // inspecting `GET /session/:id/message`'s `info.agent` on a real server both with and
     // without this field set on prompt_async.
-    expect(capturedBody).toEqual({ agent: ORCHESTRATOR_AGENT_NAME, parts: [{ type: 'text', text: 'hello there' }] });
+    // KAN-13 defense-in-depth: `model` here is what actually resolves the model for this
+    // specific request, per the same reasoning as ORCHESTRATOR_MODEL_ID's doc comment. Shape is
+    // `{ providerID, modelID }` -- confirmed via a live server's `GET /doc` to differ from
+    // `POST /session`'s `{ id, providerID }` shape (see the createSession test above).
+    expect(capturedBody).toEqual({
+      agent: ORCHESTRATOR_AGENT_NAME,
+      model: { providerID: ORCHESTRATOR_MODEL_PROVIDER_ID, modelID: ORCHESTRATOR_MODEL_ID },
+      parts: [{ type: 'text', text: 'hello there' }],
+    });
     expect(capturedDirectory).toBe(dir);
   });
 
