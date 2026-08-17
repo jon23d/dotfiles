@@ -33,7 +33,9 @@ how to verify it's working, and troubleshooting.
 
 This repo's role is now just to keep `~/code/chatty` cloned/updated and
 delegate to its own install script — see
-`run_onchange_install-chatty.sh.tmpl`.
+`run_install-chatty.sh`, which runs on every `chezmoi apply` (a plain
+`run_` script, not `run_onchange_`, since only content this repo owns
+would trigger the latter — see that script's own header comment).
 
 ## Secrets
 

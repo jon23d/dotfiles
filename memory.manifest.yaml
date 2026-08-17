@@ -36,7 +36,11 @@ dependencies:
 
 # Service-to-service seams this repo participates in. Canonical, undirected;
 # name alphabetically so edge/portal--api == edge/api--portal.
-edges: []
+edges:
+  - edge/chatty--dotfiles   # run_install-chatty.sh (clone/update/hand-off) +
+                            # chatty reading opencode.jsonc/secrets.env at
+                            # runtime + chatty's test suite reaching into a
+                            # sibling dotfiles checkout
 
 # Cross-cutting scopes always loaded on top of the above. Keep the global tier
 # thin — infra/tooling only.
