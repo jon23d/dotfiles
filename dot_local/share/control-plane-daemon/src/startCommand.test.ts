@@ -54,6 +54,7 @@ function fakeHandle(overrides: Partial<HarnessSessionHandle> = {}): HarnessSessi
     stop: vi.fn(),
     onExit: vi.fn(),
     onRename: vi.fn(),
+    onError: vi.fn(),
     provisionChannelId: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -695,6 +696,83 @@ describe('runStart', () => {
       await Promise.resolve();
 
       expect(sessionStore.renameSession).toHaveBeenLastCalledWith(expect.any(String), 'KAN-9 : devsix');
+    });
+  });
+
+  describe('onError wiring (review kan13-2 F5)', () => {
+    function withCapturedErrorCallback() {
+      let capturedErrorCallback: ((info: { error: unknown }) => void) | undefined;
+      const handle = fakeHandle({
+        onError: vi.fn((cb: (info: { error: unknown }) => void) => {
+          capturedErrorCallback = cb;
+        }),
+      });
+      const adapter = fakeOpencodeAdapter({ start: vi.fn().mockResolvedValue(handle) });
+      return { handle, adapter, fire: (error: unknown) => capturedErrorCallback?.({ error }) };
+    }
+
+    it("posts a notice into the session's own channel when opencode reports a session.error, mirroring the onExit crash notice and the onRename failure notice (never fail silently)", async () => {
+      const { adapter, fire } = withCapturedErrorCallback();
+      const restClient = fakeRestClient();
+      const d = deps({ restClient, harnesses: { opencode: adapter } });
+
+      await runStart(['opencode', '/home/jon/project'], d);
+      fire({ name: 'ProviderAuthError', data: { providerID: 'litellm', message: 'model not found' } });
+      // The post happens fire-and-forget inside the onError callback -- flush microtasks.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(restClient.createPost).toHaveBeenCalledWith(
+        'new-channel-id',
+        expect.stringMatching(/ProviderAuthError|model not found/i),
+      );
+    });
+
+    it('fires again on a second, later session.error signal for the same session', async () => {
+      const { adapter, fire } = withCapturedErrorCallback();
+      const restClient = fakeRestClient();
+      const d = deps({ restClient, harnesses: { opencode: adapter } });
+
+      await runStart(['opencode', '/home/jon/project'], d);
+      fire({ name: 'FirstError' });
+      await Promise.resolve();
+      await Promise.resolve();
+      fire({ name: 'SecondError' });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(restClient.createPost).toHaveBeenCalledTimes(2);
+      expect(restClient.createPost).toHaveBeenNthCalledWith(1, expect.anything(), expect.stringMatching(/FirstError/));
+      expect(restClient.createPost).toHaveBeenNthCalledWith(2, expect.anything(), expect.stringMatching(/SecondError/));
+    });
+
+    it('sanitizes backticks out of the error description before interpolating it into the notice (same class as kan7-1 F1)', async () => {
+      const { adapter, fire } = withCapturedErrorCallback();
+      const restClient = fakeRestClient();
+      const d = deps({ restClient, harnesses: { opencode: adapter } });
+
+      await runStart(['opencode', '/home/jon/project'], d);
+      // The error payload's message is opencode/LiteLLM-controlled, not this daemon's own --
+      // same class of issue as kan7-1 F1's agent-controlled rename title.
+      fire({ name: 'ProviderAuthError', data: { message: 'bad `; rm -rf / ` model' } });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(restClient.createPost).toHaveBeenCalledWith('new-channel-id', expect.not.stringContaining('`; rm -rf /'));
+    });
+
+    it('logs loudly (and does not throw) if posting the session-error notice itself also fails', async () => {
+      const { adapter, fire } = withCapturedErrorCallback();
+      const restClient = fakeRestClient({ createPost: vi.fn().mockRejectedValue(new Error('mattermost 500')) });
+      const logger = silentLogger();
+      const d = deps({ restClient, logger, harnesses: { opencode: adapter } });
+
+      await runStart(['opencode', '/home/jon/project'], d);
+      expect(() => fire({ name: 'UnknownError' })).not.toThrow();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(logger.error).toHaveBeenCalled();
     });
   });
 });

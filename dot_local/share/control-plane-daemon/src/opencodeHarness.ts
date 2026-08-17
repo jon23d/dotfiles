@@ -534,6 +534,16 @@ function isAbortError(err: unknown): boolean {
 interface RenameState {
   lastTitle: string;
   callbacks: Array<(identifier: string) => void>;
+  /**
+   * `onError` callbacks (KAN-13 review kan13-2 F5), fired whenever a
+   * `session.error` frame for this session is seen on the shared `/event`
+   * stream -- see `HarnessSessionHandle.onError`'s doc comment (harness.ts)
+   * for why this can fire more than once, and why it exists alongside (not
+   * instead of) `state.logger.error` below: logging alone left a
+   * `session.error` invisible to the operator's actual Mattermost chat,
+   * which this callback is the harness-agnostic seam for fixing.
+   */
+  errorCallbacks: Array<(info: { error: unknown }) => void>;
   /** This session's own logger, as passed to `start()` (KAN-13). Session.error
    * handling in `handleRawSseFrame` below looks it up here, per session,
    * rather than using the one generic `logger` `readEventStream` was opened
@@ -592,6 +602,14 @@ function handleRawSseFrame(rawEvent: string, renameState: Map<string, RenameStat
       'opencode session.error event -- the session\'s in-flight request failed (provider/model rejection, auth failure, or similar)',
       { sessionID, error },
     );
+    // Review kan13-2 F5: the log line above only ever reaches the daemon's own
+    // stderr/journald -- never the operator's actual Mattermost chat, which is
+    // this whole system's product surface. Fan this out to every registered
+    // `onError` callback too, so startCommand.ts (the harness-agnostic caller)
+    // can post an operator-visible notice into the session's own channel, the
+    // same way `onExit`'s crash notice and the rename-failure notice already
+    // do for their own loud failures.
+    for (const cb of state.errorCallbacks) cb({ error });
     return;
   }
   // most frames on this stream are neither session.updated nor session.error -- expected, not an error
@@ -889,7 +907,7 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
       await validateFolder(folder);
       const server = await ensureSharedServer(logger, operatorUserId);
       const { id: sessionId, title: initialTitle } = await createSession(server, folder);
-      server.renameState.set(sessionId, { lastTitle: initialTitle, callbacks: [], logger });
+      server.renameState.set(sessionId, { lastTitle: initialTitle, callbacks: [], errorCallbacks: [], logger });
 
       const handle: HarnessSessionHandle = {
         async sendPrompt(message) {
@@ -940,6 +958,15 @@ export function createOpencodeHarness(config: OpencodeHarnessConfig = {}): Harne
 
         onRename(callback) {
           server.renameState.get(sessionId)?.callbacks.push(callback);
+          ensureEventStream(server, logger);
+        },
+
+        onError(callback) {
+          // Review kan13-2 F5. Same lazy-open posture as `onRename` just above -- a
+          // caller that registers only `onError` (never `onRename`) must still get the
+          // shared `/event` stream opened for it, rather than silently depending on
+          // some other registration having already triggered it first.
+          server.renameState.get(sessionId)?.errorCallbacks.push(callback);
           ensureEventStream(server, logger);
         },
 

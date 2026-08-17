@@ -57,6 +57,29 @@ export interface HarnessSessionHandle {
    */
   onRename(callback: (identifier: string) => void): void;
   /**
+   * Registers a callback fired every time opencode reports this session's
+   * in-flight request failed (KAN-13 review kan13-2 F5: opencode's own
+   * `session.error` signal -- a provider/model rejection, auth failure, or
+   * similar). Same "may fire more than once" posture as `onRename` above,
+   * not `onExit`'s "fires exactly once" guarantee: a session can have
+   * several failed requests over its lifetime (e.g. a pinned model that
+   * stops resolving mid-conversation), and callers must not assume this
+   * fires at most once. `error` is deliberately untyped -- opencode's own
+   * error shape is a union of several distinct error types (`ProviderAuthError`,
+   * `ContextOverflowError`, `APIError`, ...) that this seam only needs to pass
+   * through, not branch on (see `sessionErrorEventSchema`'s doc comment in
+   * opencodeHarness.ts). Each concrete harness decides for itself how it
+   * detects this (opencode's own `session.error` SSE event); this callback is
+   * the harness-agnostic seam startCommand.ts reacts to by posting an
+   * operator-visible chat message into the session's own channel --
+   * mirroring how `onExit`'s crash notice and the rename-failure notice
+   * already reach the operator, per this epic's "never fail silently"
+   * principle (daemon.ts:116-119). Before this callback existed, a
+   * `session.error` only ever reached the daemon's own structured log, never
+   * the operator's chat -- see review kan13-2 F5.
+   */
+  onError(callback: (info: { error: unknown }) => void): void;
+  /**
    * Delivers this session's own Mattermost channel id (KAN-10) into wherever
    * this harness's in-session agent can reliably discover it -- called
    * exactly once, after `start()` already returned this handle, because

@@ -910,6 +910,88 @@ describe('createOpencodeHarness', () => {
       await vi.waitFor(() => expect(onRename).toHaveBeenCalledWith('still works'));
       sse.close();
     });
+
+    describe('onError callback (review kan13-2 F5)', () => {
+      it('fires with the error payload when opencode reports this session errored, so a harness-agnostic caller can surface it', async () => {
+        const child = fakeChildProcess();
+        const spawnProcess = vi.fn().mockReturnValue(child);
+        const sse = controllableEventStream();
+        server.use(
+          healthyHandler(),
+          agentAvailableHandler(),
+          http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
+          sse.handler,
+        );
+        const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+        const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+        const onError = vi.fn();
+        // Registered alone, with no `onRename` call -- confirms `onError` opens the lazy
+        // event stream (KAN-7) on its own rather than depending on `onRename` having been
+        // called first, since a caller could register either callback in either order.
+        handle.onError(onError);
+
+        const providerError = { name: 'ProviderAuthError', data: { providerID: 'litellm', message: 'model not found' } };
+        sse.push({ type: 'session.error', properties: { sessionID: 'ses_abc123', error: providerError } });
+
+        await vi.waitFor(() => expect(onError).toHaveBeenCalledWith({ error: providerError }));
+        sse.close();
+      });
+
+      it('fires again on a second, later session.error event for the same session', async () => {
+        const child = fakeChildProcess();
+        const spawnProcess = vi.fn().mockReturnValue(child);
+        const sse = controllableEventStream();
+        server.use(
+          healthyHandler(),
+          agentAvailableHandler(),
+          http.post(`${BASE_URL}/session`, () => HttpResponse.json({ id: 'ses_abc123', title: 'New session - x' })),
+          sse.handler,
+        );
+        const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+        const handle = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+        const onError = vi.fn();
+        handle.onError(onError);
+
+        sse.push({ type: 'session.error', properties: { sessionID: 'ses_abc123', error: { name: 'FirstError' } } });
+        await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+
+        sse.push({ type: 'session.error', properties: { sessionID: 'ses_abc123', error: { name: 'SecondError' } } });
+        await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(2));
+
+        expect(onError).toHaveBeenNthCalledWith(1, { error: { name: 'FirstError' } });
+        expect(onError).toHaveBeenNthCalledWith(2, { error: { name: 'SecondError' } });
+        sse.close();
+      });
+
+      it('ignores a session.error event reported for a different session sharing the same opencode server', async () => {
+        const child = fakeChildProcess();
+        const spawnProcess = vi.fn().mockReturnValue(child);
+        const sse = controllableEventStream();
+        let created = 0;
+        server.use(
+          healthyHandler(),
+          agentAvailableHandler(),
+          http.post(`${BASE_URL}/session`, () => {
+            created += 1;
+            return HttpResponse.json({ id: created === 1 ? 'ses_aaa' : 'ses_bbb', title: 'New session - x' });
+          }),
+          sse.handler,
+        );
+        const harness = createOpencodeHarness({ spawnProcess, pickPort: async () => PORT });
+        const dir2 = await mkdtemp(join(tmpdir(), 'control-plane-daemon-opencode-test-onerror-'));
+        const handleA = await harness.start({ folder: dir, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+        await harness.start({ folder: dir2, operatorUserId: OPERATOR_USER_ID, logger: silentLogger() });
+        const onErrorA = vi.fn();
+        handleA.onError(onErrorA);
+
+        sse.push({ type: 'session.error', properties: { sessionID: 'ses_bbb', error: { name: 'UnknownError' } } });
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        expect(onErrorA).not.toHaveBeenCalled();
+        sse.close();
+        await rm(dir2, { recursive: true, force: true });
+      });
+    });
   });
 
   describe('provisionChannelId (KAN-10)', () => {

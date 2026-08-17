@@ -70,6 +70,39 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Turns the opaque `error` payload from `HarnessSessionHandle.onError` (KAN-13
+ * review kan13-2 F5) into a short, readable string for the operator-visible
+ * chat notice below. Deliberately best-effort rather than a typed parse: the
+ * payload is a union of several distinct opencode error shapes
+ * (`ProviderAuthError`, `ContextOverflowError`, `APIError`, ...; see
+ * `sessionErrorEventSchema`'s doc comment in opencodeHarness.ts for why this
+ * seam only passes the payload through rather than modeling it field-by-field)
+ * that this notice only needs to describe for a human, not branch on. Pulls a
+ * `name` and a nested `data.message` when both are present -- opencode's own
+ * error union commonly has both -- falling back to a raw JSON dump (or
+ * `String(error)` if even that fails) so the notice is never blank.
+ */
+function describeSessionError(error: unknown): string {
+  if (error !== null && typeof error === 'object') {
+    const record = error as Record<string, unknown>;
+    const name = typeof record.name === 'string' ? record.name : undefined;
+    const data = record.data;
+    const dataMessage =
+      data !== null && typeof data === 'object' && typeof (data as Record<string, unknown>).message === 'string'
+        ? ((data as Record<string, unknown>).message as string)
+        : undefined;
+    const message = dataMessage ?? (typeof record.message === 'string' ? (record.message as string) : undefined);
+    if (name && message) return `${name}: ${message}`;
+    if (name) return name;
+  }
+  try {
+    return JSON.stringify(error) ?? String(error);
+  } catch {
+    return String(error);
+  }
+}
+
 /** Turns `#4 : devsix` into a valid Mattermost channel name slug: lowercase,
  * `[a-z0-9-]` only, capped at Mattermost's 64-character channel name limit. */
 function slugify(value: string): string {
@@ -432,6 +465,38 @@ async function attemptStart(args: string[], force: boolean, deps: StartDeps): Pr
       .createPost(channelId, `Session \`${displayIdentifier}\` crashed unexpectedly and is no longer running.`)
       .catch((err: unknown) => {
         deps.logger.error('failed to notify the operator that a session crashed', { err, identifier: displayIdentifier, channelId });
+      });
+  });
+
+  // Review kan13-2 F5: opencode's own `session.error` signal (a provider/model
+  // rejection, auth failure, or similar mid-conversation failure -- see
+  // `HarnessSessionHandle.onError`'s doc comment) used to only ever reach the
+  // daemon's own structured log, never the operator's actual Mattermost chat.
+  // That contradicts this epic's "never fail silently" principle (daemon.ts:
+  // 116-119) exactly the way `onExit`'s crash notice just above and
+  // `performRename`'s failure notice further up both already avoid for their
+  // own loud failures -- so this posts the same kind of notice, into the same
+  // per-session channel, using the store's current identifier the same way
+  // `onExit` does above. May fire more than once per session (unlike
+  // `onExit`), so no serialization is needed here the way `performRename`
+  // needs `renameChain`: each notice is independent and doesn't mutate any
+  // shared state whose ordering matters.
+  handle.onError(({ error }) => {
+    const current = deps.sessionStore.findByChannelId(channelId);
+    const displayIdentifier = current?.identifier ?? identifier;
+    const description = describeSessionError(error);
+    deps.logger.error('opencode session.error surfaced to the operator', {
+      identifier: displayIdentifier,
+      channelId,
+      error,
+    });
+    deps.restClient
+      .createPost(
+        channelId,
+        `Session \`${stripBackticks(displayIdentifier)}\` hit an error: ${stripBackticks(description)}`,
+      )
+      .catch((err: unknown) => {
+        deps.logger.error('failed to post session-error notice', { err, identifier: displayIdentifier, channelId });
       });
   });
 
