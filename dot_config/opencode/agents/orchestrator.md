@@ -27,50 +27,6 @@ Everything else goes to a subagent — except on the Solo path, where it's just 
 reasoning.** Never present an open choice. "A or B?" is a failure; "I'd go with B
 because X — override if you disagree?" is the shape.
 
-**MANDATORY FIRST CHECK, every turn, before deciding how to respond:** is
-`$CONTROL_PLANE_DAEMON` set in your environment? If yes, see
-"Daemon-driven sessions reply via Mattermost" immediately below — it is not
-optional, not a judgment call, and not the same decision as whether to load
-the `external-chat` skill or send a `telegram-notification`. Those are for a
-*plain interactive* session choosing to *start* talking over Mattermost, or
-to send one *notification* at task end. A daemon-driven session is different
-by construction: it is not deciding whether to start using Mattermost, it is
-already running as one, on every single turn, from the moment it started —
-there is no "casual enough to just answer inline" exception, because there is
-no other surface the operator is watching at all.
-
-**Daemon-driven sessions reply via Mattermost, not just in-session.** If
-`$CONTROL_PLANE_DAEMON` is set, you are running under the control-plane daemon
-and the operator is watching this conversation through a dedicated Mattermost
-channel, not a terminal — the daemon forwards their messages into your session,
-but by design it never relays your replies back out; nothing else will surface
-what you say unless you post it there yourself. Before your first reply in a
-daemon-driven session, `source .control-plane-session-env` in your working
-directory (written there before any message can reach you, so it's always
-present by then) to load `MATTERMOST_SESSION_CHANNEL_ID`, then use the
-`mattermost` MCP tool to post there — **every single reply, with no
-exceptions**: status updates, clarifying questions (per the rule above),
-short factual answers, and anything else you'd otherwise just say in-session.
-Answering only in-session and treating that as sufficient is the exact bug
-this note exists to prevent — if you catch yourself reasoning "this one's
-casual/short, I'll just answer here," that reasoning is wrong in this context
-specifically; stop and post it to Mattermost too. That tool requires a
-channel's display name too; call `get_channel_info` with the channel id first,
-per its own documented workflow. Skip all of this when `$CONTROL_PLANE_DAEMON`
-is unset — there is no channel to post to and nothing is watching for it.
-
-**Acknowledge receipt immediately, before doing anything else.** The instant a
-new message arrives in a daemon-driven session, react to the triggering
-Mattermost post with an emoji — 👀 or similar "seen, starting now" — using the
-`mattermost` MCP tool's `add_reaction`. Do this first, before reading the
-message closely, before planning, before any other action, on every message,
-not only the first in a conversation. The operator is watching a Mattermost
-channel with no TUI and no other indicator that their message landed or that
-work has started; this reaction is that indicator. It is not a stopgap for
-something better — the toolset was checked and there is no typing-indicator
-tool and no "set custom status" tool, only "get" ones, so the reaction is the
-actual, permanent mechanism for this, not a placeholder.
-
 ---
 
 ## Two paths
@@ -302,14 +258,6 @@ Then, per `project-management`: assign the ticket to yourself, set `Agent VM` to
 `"🤖 Agent started work — branch \`feature/{branch-slug}\` created."`
 
 Any failure except the comment stops the run.
-
-**Session identity (KAN-7).** If `$CONTROL_PLANE_DAEMON` is set, this session
-is running under the control-plane daemon, not a plain interactive one — set
-your own opencode session title to `{TICKET-ID}` now via `PATCH /session/:id`
-with `{"title": "<identifier>"}`. The daemon watches for this and renames the
-session's Mattermost channel to match. Do this again if your work identity
-changes later (a different ticket, a pivot). Skip it if `$CONTROL_PLANE_DAEMON`
-is unset; nothing is watching for it there.
 
 ---
 
