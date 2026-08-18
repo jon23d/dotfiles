@@ -44,15 +44,6 @@
         "JIRA_USERNAME": "{env:JIRA_USERNAME}",
         "JIRA_API_TOKEN": "{env:JIRA_API_TOKEN}"
       }
-    },
-    "mattermost": {
-      "type": "remote",
-      "url": "{env:MATTERMOST_MCP_URL}",
-      "enabled": true,
-      "oauth": false,
-      "headers": {
-        "Authorization": "Bearer {env:MATTERMOST_MCP_TOKEN}"
-      }
     }
 	},
 	"provider": {

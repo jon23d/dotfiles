@@ -1,28 +1,13 @@
 # memory.manifest.yaml — lives at the repo root of each service.
 #
-# Purpose: declares this repo's memory scope and its dependencies/edges so the
-# agent's READ scope is DECLARED, not guessed. The `dependencies` and `edges`
-# lists below are also the canonical-name menu: the agent files cross-cutting
-# facts by picking from these, and must not invent new names.
+# Purpose: declares this repo's memory scope and its dependencies so the
+# agent's READ scope is DECLARED, not guessed. The `dependencies` list below
+# is also the canonical-name menu: the agent files cross-cutting facts by
+# picking from these, and must not invent new names.
 #
 # PROVISIONAL — re-scoped by KAN-19 (2026-08-17), flag for human review.
-# Originally bootstrapped at KAN-7 (2026-08-16) scoped to
-# `project/control-plane-daemon`, since at the time that daemon (under
-# dot_local/share/control-plane-daemon) was the only part of this repo with
-# meaningful cross-session memory. KAN-19 extracted that daemon's code into
-# its own repo (github.com/jon23d/chatty, its own `project/chatty` scope,
-# own memory.manifest.yaml) — nothing under `project/control-plane-daemon`
-# lives in this repo anymore. Existing `project/control-plane-daemon` notes
-# remain valid *history* (many describe facts still true of the code, now
-# in chatty) but new facts about that codebase should be filed under
-# `project/chatty`, not here. Re-scoped `project` to `project/dotfiles`
-# (the repo as a whole) since there's no longer one obvious sub-project
-# dominating this repo's memory footprint. Kept `dep/opencode` and
-# `dep/mattermost` in the list below because dotfiles still owns
-# config/integration points for both (opencode.jsonc, orchestrator.md, and
-# secrets.env's per-host Mattermost bot token resolution used by both
-# interactive shells and chatty's install script) even though the
-# session-orchestration *code* moved out.
+# `project` is scoped to `project/dotfiles` (the repo as a whole); this repo
+# no longer owns a separate sub-project or any cross-service chat integration.
 
 domain: harness              # innkeeper | harness — hard boundary
 project: project/dotfiles    # this repo's own scope
@@ -32,15 +17,6 @@ project: project/dotfiles    # this repo's own scope
 # fact about it, so naming stays consistent across projects.
 dependencies:
   - dep/opencode      # opencode CLI/server harness (SSE /event, session API) that runs each session
-  - dep/mattermost     # Mattermost REST API (channels, posts) used as the operator/agent chat surface
-
-# Service-to-service seams this repo participates in. Canonical, undirected;
-# name alphabetically so edge/portal--api == edge/api--portal.
-edges:
-  - edge/chatty--dotfiles   # run_install-chatty.sh (clone/update/hand-off) +
-                            # chatty reading opencode.jsonc/secrets.env at
-                            # runtime + chatty's test suite reaching into a
-                            # sibling dotfiles checkout
 
 # Cross-cutting scopes always loaded on top of the above. Keep the global tier
 # thin — infra/tooling only.
@@ -49,6 +25,6 @@ always_load:
   - global/infra        # gitea, doks, litellm — cross-domain infra
 
 # Resolved READ scope for any ticket in this repo is the union of:
-#   project + dependencies + edges + always_load
+#   project + dependencies + always_load
 # The agent loads exactly this set and no more. Do not widen at runtime;
 # add scopes here if a new dependency is introduced.

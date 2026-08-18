@@ -22,21 +22,6 @@ chezmoi init --apply jon23d
 - node
 - ripgrep
 
-## Control-plane daemon
-
-Runs coding-agent sessions (`opencode` today) on a VM under remote control
-from a Mattermost DM. As of KAN-19 this daemon lives in its own repo,
-[jon23d/chatty](https://github.com/jon23d/chatty) — see that repo's
-`README.md` for the full operator's guide: installing/updating it, the
-`start`/`stop`/`list`/`help` command surface, the environment/config model,
-how to verify it's working, and troubleshooting.
-
-This repo's role is now just to keep `~/code/chatty` cloned/updated and
-delegate to its own install script — see
-`run_install-chatty.sh`, which runs on every `chezmoi apply` (a plain
-`run_` script, not `run_onchange_`, since only content this repo owns
-would trigger the latter — see that script's own header comment).
-
 ## Secrets
 
 Secrets are kept in a single file, `~/.config/secrets.env`, encrypted as one opaque

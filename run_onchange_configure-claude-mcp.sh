@@ -52,14 +52,3 @@ add_server mcp-atlassian '{
     "JIRA_API_TOKEN": "${JIRA_API_TOKEN}"
   }
 }'
-
-# One bot account per host (platform/mattermost in gitops); MATTERMOST_MCP_TOKEN
-# is resolved per-hostname in zsh/rc.sh from MATTERMOST_TOKEN_<HOSTNAME> in
-# secrets.env, so this block itself is identical on every machine.
-add_server mattermost '{
-  "type": "http",
-  "url": "${MATTERMOST_MCP_URL}",
-  "headers": {
-    "Authorization": "Bearer ${MATTERMOST_MCP_TOKEN}"
-  }
-}'
