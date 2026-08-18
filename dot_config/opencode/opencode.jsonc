@@ -1,27 +1,6 @@
 {
 	"$schema": "https://opencode.ai/config.json",
-  // KAN-13: explicit default model, in "provider/model" form per opencode's config schema
-  // (this file's own `$schema` above, https://opencode.ai/config.json, `Config.model`).
-  // Without this, opencode's own default-model resolution for the `litellm` provider silently
-  // picked `small-model` (4096-token context), which the Orchestrator agent's system prompt +
-  // MCP tool schemas always overflowed -- causing an unbounded compaction loop (LiteLLM
-  // correctly rejects the oversized request, but opencode's auto-continue handler can only
-  // shrink conversation history, not the fixed prompt/tool-schema overhead that was actually
-  // oversized here). Full root cause: .agent/research-kan13.md. Confirmed `deepseek-v4-pro`
-  // live via LiteLLM's own `GET {LITELLM_URL}/models` and `GET {LITELLM_URL}/model/info` --
-  // 1,000,000-token input context / 8,192-token max output, routed to the real DeepSeek API
-  // (`custom_llm_provider: "deepseek"`), not the local LM Studio backend the other models here
-  // use.
-  "model": "litellm/deepseek-v4-pro",
-  // KAN-13 (review kan13-1 F3): explicit `small_model`, same "provider/model" form, same
-  // `Config` schema. Without this, opencode's `getSmallModel` falls back to the top-level
-  // `model` above for cheap utility calls (e.g. title generation) -- silently routing them
-  // through the large, paid `deepseek-v4-pro` instead of an actually-cheap model. Pinned to
-  // `small-model` itself (the same model whose accidental *default* selection was this
-  // ticket's root cause) -- its 4096-token context is exactly right for a utility call like
-  // title generation, which was the failure mode when it was misused as the *general-purpose*
-  // default, not when used for what its name says it's for.
-  "small_model": "litellm/small-model",
+  "default_agent": "orchestrator",
   "subagent_depth": 4,
    "permission": {
     "*": "allow",
@@ -81,13 +60,13 @@
 			"name": "LiteLLM",
 			"npm": "@ai-sdk/openai-compatible",
 			"models": {
-        "deepseek-v4-pro": {
-          "name": "deepseek-v4-pro",
-          "limit": {
-            "context": 1000000,
-            "output": 8192
-          }
-        },
+				"glm-5.2": {
+					"name": "glm-5.2",
+					"limit": {
+						"context": 650000,
+						"output": 100000
+					}
+				},
         "deepseek-v4-flash": {
           "name": "deepseek-v4-flash",
           "limit": {
