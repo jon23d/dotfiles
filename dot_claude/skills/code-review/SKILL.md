@@ -51,6 +51,43 @@ is unclear.
 Major versus minor: **could this be wrong in production?** Yes → major. Only
 about how the code reads → minor.
 
+## Security checklist
+
+Run this against every diff, regardless of what it looks like on the surface —
+security issues hide in changes that don't look security-relevant, so this
+isn't gated on the diff "looking like" auth/payments/data-access code. File
+anything you confirm as a normal finding, at the severity the **Severity**
+section above implies (most security holes are `critical`; a hardening
+suggestion with no concrete exploit path is `minor`) — in the same output as
+everything else, not a separate report.
+
+- **Injection** — SQL, shell, template, or log injection. Any raw string
+  interpolation into a query, command, or template that includes data from
+  outside the current trust boundary (user input, another service's
+  response). Tagged-template `$queryRaw`-style parameterization is safe;
+  string concatenation is not.
+- **Tenant / ownership isolation** — a multi-tenant or multi-user query,
+  mutation, or file path that doesn't scope by the caller's tenant/company/
+  user id, or scopes it in a way a crafted id could bypass (e.g. relying on a
+  join that happens to filter today but isn't a hard `WHERE`).
+- **AuthN/AuthZ** — an endpoint, job, or internal call reachable without the
+  authentication/authorization check the rest of the codebase uses for
+  similar operations. A check that runs but on the wrong identity (e.g.
+  checking the session user instead of the resource owner).
+- **Secrets** — credentials, tokens, private keys, or connection strings in
+  the diff, in a log statement, or in a test fixture that isn't obviously
+  fake.
+- **Sensitive data exposure** — a response, log line, or error message that
+  now includes a field it shouldn't (PII, tokens, internal ids meant to stay
+  server-side).
+- **Deserialization / parsing of untrusted input** — parsing external data
+  (webhook payloads, uploaded files, query params) without validation before
+  it reaches business logic, especially where the result drives a query,
+  file path, or shell command.
+- **SSRF / outbound requests to caller-influenced URLs** — a new outbound
+  HTTP call, webhook, or redirect where the target host/path is wholly or
+  partly caller-controlled.
+
 ## Not a finding
 
 - Anything the gate covers.
@@ -120,12 +157,11 @@ not the whole slice again.
 ## Method
 
 1. Read the plan, the ticket, and `AGENTS.md` constraints before the code.
-   Also load `security-review` — always, regardless of what the diff looks
-   like; security issues hide in changes that don't look security-relevant,
-   so this isn't gated. Also load `observability` if the diff touches
-   logging, routes, services, or infra config. File findings from whichever
-   of these apply together with your own, in the same output — not as
-   separate delegations.
+   Run the **Security checklist** above against the diff — always, not
+   gated on whether it looks security-relevant. Also load `observability`
+   if the diff touches logging, routes, services, or infra config. File
+   everything you confirm — security checklist, observability, and your own
+   review — together in the same output, not as separate reports.
 2. Get the diff in two steps — never a bare `git diff main...HEAD`; unbounded
    output overflows context and hangs the review.
    - `git diff main...HEAD --stat` and `git status --short` first, to see
