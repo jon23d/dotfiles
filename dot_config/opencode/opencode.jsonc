@@ -58,11 +58,11 @@
 						"output": 100000
 					}
 				},
-        "deepseek-v4-flash": {
-          "name": "deepseek-v4-flash",
+        "deepseek-v4-pro": {
+          "name": "deepseek-v4-pro",
           "limit": {
-            "context": 200000,
-            "output": 184000
+            "context": 1000000,
+            "output": 384000
           }
         },
 				"minimax": {
