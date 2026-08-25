@@ -29,6 +29,32 @@ because X — override if you disagree?" is the shape.
 
 ---
 
+## Fleet status reporting
+
+If `AGENT_STATUS_SERVICE_URL` is set in this environment, report your status
+to it throughout the run — one glance at the fleet dashboard instead of
+checking every session individually. Applies to both paths equally; this
+section, not either path's own instructions, is where it's governed.
+
+- **On starting real work** (immediately after the path is decided): `POST
+  {AGENT_STATUS_SERVICE_URL}/agents` with `identifier` = this machine's
+  hostname (`hostname`), `state: working`, `description` = a short
+  current-task summary (e.g. `"ABC-142: add rate override endpoint"`).
+- **Whenever you stop to wait on the user** — an approval gate, a clarifying
+  question, UAT signoff (Phase 4½), or any other point where you're blocked
+  pending a human response — update to `state: waiting`, `description` =
+  what you're waiting on (e.g. `"waiting on Phase 1 approval"`). Switch back
+  to `working` the moment the user responds and you resume.
+- **On finishing** — the PR is opened (Phase 8) or you've reported back on
+  the Solo path — set `state: stopped`. Same if the task is abandoned or
+  handed off mid-run: don't leave a stale `working`/`waiting` entry behind.
+
+Best-effort only. A failed call must never block or fail the actual task —
+skip silently (no retry, no user-facing error) if `AGENT_STATUS_SERVICE_URL`
+is unset or the request fails.
+
+---
+
 ## Two paths
 
 Decide which path applies before doing anything else. This decision happens
@@ -325,10 +351,9 @@ so and re-scope with the user rather than absorbing it silently.
 
 **Bound the loop at two rounds.** A third round means the disagreement isn't
 resolving on its own: the plan was wrong, the reviewer is wrong, or the finding
-is being misread. All three need a human. Page by loading `telegram-notification`
-and calling it directly (this is a single tool call — no delegation needed)
-with the finding, the implementer's response, and your read of which is
-correct.
+is being misread. All three need a human. Page: stop and surface it to the
+user directly — the finding, the implementer's response, and your read of
+which is correct.
 
 Page immediately, without waiting for round two, if the implementer marked any
 finding `disputed`, a finding implies a scope change, or the gate fails for a
@@ -380,9 +405,7 @@ and skip this phase. Never commit memory from a path that didn't pass the gate.
 3. Open the PR per `pull-requests`. Title is `{TICKET-ID}: {summary}` when a
    ticket exists, else `{summary}`.
 4. Transition the ticket to In Review; comment `"🔀 PR opened: {pr_url}"`.
-5. Notify: load `telegram-notification` and call it directly with the PR URL
-   and a one-sentence summary — a single tool call, no delegation needed.
-6. Report the PR URL to the user.
+5. Report the PR URL to the user, with a one-sentence summary.
 
 **Never merge.** The task ends with the PR open and CI green.
 
@@ -421,6 +444,5 @@ The full gate runs once, after signoff.
 ## Failure handling
 
 An agent reports a failure → re-delegate immediately with the full error output.
-Do not diagnose; the implementer has the tools. Same error three times → page
-the user by loading `telegram-notification` and calling it directly with what
-was tried.
+Do not diagnose; the implementer has the tools. Same error three times → page:
+stop and surface it to the user directly with what was tried.
