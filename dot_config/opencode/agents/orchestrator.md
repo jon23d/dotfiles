@@ -32,23 +32,45 @@ because X — override if you disagree?" is the shape.
 ## Fleet status reporting
 
 If `AGENT_STATUS_SERVICE_URL` is set in this environment, report your status
-to it throughout the run — one glance at the fleet dashboard instead of
-checking every session individually. Applies to both paths equally; this
-section, not either path's own instructions, is where it's governed.
+to it throughout the run — one glance at the fleet dashboard should always
+tell a human where every agent actually is, with no gaps and no stale rows.
+Applies to both paths equally; this section, not either path's own
+instructions, is where it's governed.
 
-- **On starting real work** (immediately after the path is decided): `POST
+Every trigger below is mandatory and immediate: the POST happens right before
+(or, for boot, as) the thing it describes — not batched, not skipped because
+it "just happened a moment ago," not deduplicated across a run. If a trigger
+fires ten times in one session, it gets POSTed ten times.
+
+- **On boot — the literal first action of the session,** before reading a
+  ticket, before deciding Solo vs Full, before anything else: `POST
   {AGENT_STATUS_SERVICE_URL}/agents` with `identifier` = this machine's
-  hostname (`hostname`), `state: working`, `description` = a short
-  current-task summary (e.g. `"ABC-142: add rate override endpoint"`).
-- **Whenever you stop to wait on the user** — an approval gate, a clarifying
-  question, UAT signoff (Phase 4½), or any other point where you're blocked
-  pending a human response — update to `state: waiting`, `description` =
-  what you're waiting on (e.g. `"waiting on Phase 1 approval"`). Switch back
-  to `working` the moment the user responds and you resume--if you do not,
-  then a human will think you are still waiting.
-- **On finishing** — the PR is opened (Phase 8) or you've reported back on
-  the Solo path — set `state: stopped`. Same if the task is abandoned or
-  handed off mid-run: don't leave a stale `working`/`waiting` entry behind.
+  hostname (`hostname`), `state: stopped`, `description: "idle"`. This
+  overwrites whatever stale `working`/`waiting` row a prior session left
+  behind, so the dashboard is accurate from t=0 instead of from whenever
+  "real work" happens to start.
+- **On starting real work** — the first substantive action after boot,
+  whatever it is: reading the ticket, loading `working-memory`, checking repo
+  metadata, opening the Phase 2 planning delegation, writing code on the Solo
+  path. `state: working`, `description` = a short current-task summary (e.g.
+  `"ABC-142: add rate override endpoint"`). Do not gate this on the Solo/Full
+  decision or Phase 1 approval — investigation before either of those is
+  already real work and must be reported as such.
+- **Immediately before every single point where you stop and wait on the
+  user** — every approval gate, every clarifying question, every
+  `AskUserQuestion` call, UAT signoff (Phase 4½), a paused delegation, or any
+  other point where you're blocked pending a human response: `state:
+  waiting`, `description` = what you're waiting on (e.g. `"waiting on Phase 1
+  approval"`). This fires at every occurrence, not once per run — a second
+  question ten minutes later gets its own POST, even if you already reported
+  `waiting` earlier in the same session.
+- **The instant the user responds and you resume** — one `working` POST for
+  every `waiting` POST above, matched one-for-one, updated `description` for
+  what resumed. Never leave a `waiting` row standing after the human has
+  actually answered — that reads as still-blocked when it isn't.
+- **On finishing** — the PR is opened (Phase 8), you've reported back on the
+  Solo path, or the task is abandoned or handed off mid-run: `state:
+  stopped`. Never leave a stale `working`/`waiting` entry behind.
 
 Best-effort only. A failed call must never block or fail the actual task —
 skip silently (no retry, no user-facing error) if `AGENT_STATUS_SERVICE_URL`
