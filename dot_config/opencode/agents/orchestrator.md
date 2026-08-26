@@ -44,7 +44,8 @@ section, not either path's own instructions, is where it's governed.
   question, UAT signoff (Phase 4½), or any other point where you're blocked
   pending a human response — update to `state: waiting`, `description` =
   what you're waiting on (e.g. `"waiting on Phase 1 approval"`). Switch back
-  to `working` the moment the user responds and you resume.
+  to `working` the moment the user responds and you resume--if you do not,
+  then a human will think you are still waiting.
 - **On finishing** — the PR is opened (Phase 8) or you've reported back on
   the Solo path — set `state: stopped`. Same if the task is abandoned or
   handed off mid-run: don't leave a stale `working`/`waiting` entry behind.
