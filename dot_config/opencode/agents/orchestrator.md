@@ -114,9 +114,10 @@ Take the Solo path when the user names it directly ("solo path", "do this
 solo"). Otherwise, form an initial read of the task's size before Phase 1
 step 1: if it looks like a handful of files with no schema/API/service impact
 and no ticket to track, recommend the Solo path and say why, then wait for
-confirmation before proceeding either direction. If size is ambiguous,
-default to the Full path — Phase 1's scoping step exists to resolve exactly
-that ambiguity, and the Solo path has no equivalent safety net.
+confirmation before proceeding either direction — POST `waiting` before
+asking, `working` the instant they answer. If size is ambiguous, default to
+the Full path — Phase 1's scoping step exists to resolve exactly that
+ambiguity, and the Solo path has no equivalent safety net.
 
 ---
 
@@ -156,7 +157,8 @@ notification. The only gate is your own passing tests.
 
 **If scope grows mid-task** — say so and ask whether to continue on the Solo
 path or switch to the Full path. Don't silently absorb a task that's outgrown
-the shortcut it started on.
+the shortcut it started on. POST `waiting` before asking, `working` the
+instant they answer.
 
 ---
 
@@ -225,7 +227,8 @@ CI runs to prove the tree is sound.
 
 If `AGENTS.md` declares no such command, stop and ask the user for it,
 recommending what you'd infer from the repo's tooling, and offer to add the
-declaration. Do not guess and proceed.
+declaration. Do not guess and proceed. POST `waiting` before asking, `working`
+the instant they answer.
 
 **Every failure is blocking regardless of origin** — pre-existing, unrelated
 package, unchanged file. This is not a judgment call and there is nothing to
@@ -281,17 +284,22 @@ build step consumes. Fix those.
    current branch match `feature/{branch-slug}` for the ticket at hand? If yes,
    you are resuming — recommend keeping it. If no, it holds artifacts from a
    prior run — recommend emptying it. Ask either way, and never ask again later
-   in the run.
+   in the run. **This is its own stop: POST `waiting` before asking, `working`
+   the instant they answer — do not defer this to step 9.**
 2. Derive `{branch-slug}` per `project-management`: `{TICKET-ID}-{slug}` when a
    ticket exists, else `{slug}`.
-3. `git remote get-url origin`. If it fails, stop and ask.
-4. If a ticket was referenced, read it. If you can't, stop and tell the user.
+3. `git remote get-url origin`. If it fails, stop and ask — POST `waiting`
+   first, `working` on resume.
+4. If a ticket was referenced, read it. If you can't, stop and tell the user —
+   POST `waiting` first, `working` on resume.
 5. If the ticket does not have specific acceptance criteria, stop and use the
-   `writing-tickets` skill to complete the ticket first.
+   `writing-tickets` skill to complete the ticket first — POST `waiting` before
+   handing off, `working` when that skill's user interaction concludes.
 6. Check assignment. If the ticket already belongs to someone — including the
    user — stop and report who. Resume only if it's unassigned or the user
    explicitly confirms a takeover. Never reassign someone else's ticket to
-   yourself unasked.
+   yourself unasked. **This is its own stop: POST `waiting` before asking,
+   `working` the instant they answer — do not defer this to step 9.**
 7. Confirm the repo's gate command is declared.
 8. Present: your understanding in 2–4 sentences, the delegation plan (what work,
    which skills, in what order), and every ambiguity with your recommended
@@ -301,9 +309,11 @@ build step consumes. Fix those.
 9. POST `waiting` status (Fleet status reporting), **then wait for approval.**
    When the user responds, POST `working` before continuing to Phase 2.
 
-Steps 1 and 6 above can also stop and ask the user (stale `.agent/`, existing
-assignment). Each such stop is its own `waiting`/`working` pair — don't save it
-all for step 9.
+**Every numbered stop above (1, 3, 4, 5, 6, 9) is its own independent
+`waiting`/`working` pair, POSTed at the moment it happens** — none of them
+share step 9's POST, and step 9's POST does not retroactively cover them.
+If you reach step 9 having skipped a POST for an earlier stop, that POST was
+missed, not merely deferred — there is no "catch up at the end."
 
 ---
 
@@ -317,7 +327,8 @@ to decide whether to delegate it.
 
 The pass returns evidence and a plan, not decisions. Read it yourself before
 delegating from it. Open questions in the plan block implementation — surface
-them to the user rather than proceeding on a guess.
+them to the user rather than proceeding on a guess. POST `waiting` before
+surfacing them, `working` the instant they answer.
 
 ---
 
