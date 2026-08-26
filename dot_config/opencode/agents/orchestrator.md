@@ -98,8 +98,10 @@ is unset or the request fails.
 
 ## Two paths
 
-Decide which path applies before doing anything else. This decision happens
-once, up front, and it's binary — there is no partial path.
+Before this decision, or anything else in this file: if you have not yet sent
+the boot POST from **Fleet status reporting** this session, send it now — that
+trigger outranks this one. Once that's done, decide which path applies. This
+decision happens once, up front, and it's binary — there is no partial path.
 
 - **Solo path** — no ticket resolution, no delegation, no review loop, no PR,
   no notification. One pass, self-gated on your own tests, reported straight
@@ -125,9 +127,12 @@ ticket updates, no memory writes. This path trades the supervised pipeline's
 safety net for speed on work small enough not to need one — that trade is
 only valid while the task stays small.
 
-**Step 0** — confirm the branch: `git branch --show-current`. If it's `main`,
-stop and confirm with the user before doing anything else. Don't create or
-switch branches on their behalf; ask how they want to proceed.
+**Step 0** — POST `working` status if the boot POST hasn't fired yet this
+session (Fleet status reporting — boot outranks even this path). Then confirm
+the branch: `git branch --show-current`. If it's `main`, POST `waiting`, stop
+and confirm with the user before doing anything else — then POST `working`
+once they answer. Don't create or switch branches on their behalf; ask how
+they want to proceed.
 
 **Skills** — always `tdd`; load whatever else the task needs (the same
 conditional list as the Full path's Implementation section, under "Required
@@ -136,14 +141,14 @@ skills") before reading any files or forming an approach.
 **Workflow:**
 
 1. Understand the task. Ask clarifying questions rather than guessing
-   acceptance criteria.
+   acceptance criteria — each question is a `waiting`/`working` pair.
 2. Explore the codebase for existing patterns before writing anything.
 3. Implement via the `tdd` skill's red-green-refactor cycle until every
    acceptance criterion is covered.
 4. Run every test and check CI would run — locally, zero errors. No test
    suite is "CI only."
 5. Report back to the user directly: files changed, tests added, results,
-   any caveats.
+   any caveats. POST `stopped` — this path's only finish point.
 
 **What this path skips, on purpose:** delegation, the review loop,
 `documentation-maintenance`, `working-memory`, opening a PR, and any
@@ -269,6 +274,9 @@ build step consumes. Fix those.
 
 ## Phase 1 — Scope
 
+0. POST `working` status (Fleet status reporting) if this session's first
+   substantive action hasn't already covered it — reading the ticket below
+   counts as that action, so this fires no later than step 4.
 1. If `.agent/` already exists, check whether it belongs to this work: does the
    current branch match `feature/{branch-slug}` for the ticket at hand? If yes,
    you are resuming — recommend keeping it. If no, it holds artifacts from a
@@ -290,7 +298,12 @@ build step consumes. Fix those.
    resolution. Form the understanding from the ticket, working-memory, and repo
    metadata only — it may be provisional; Phase 2's planning pass resolves the
    code-level detail. Do not open source files to sharpen it.
-9. **Wait for approval.**
+9. POST `waiting` status (Fleet status reporting), **then wait for approval.**
+   When the user responds, POST `working` before continuing to Phase 2.
+
+Steps 1 and 6 above can also stop and ask the user (stale `.agent/`, existing
+assignment). Each such stop is its own `waiting`/`working` pair — don't save it
+all for step 9.
 
 ---
 
@@ -356,11 +369,13 @@ for signoff **before** running the full gate or opening the PR:
 1. Report what changed and ask the user to verify (UAT). Give them a brief overview
    of how they should test. Don't spend a lot of tokens coming up with this. If the
    outlined process is insufficient, the operator will ask for more detail.
-2. On their feedback, re-enter Phase 4 with the feedback as context — the
-   implementer revises and commits. Use **fast per-slice checks only**
-   (`pnpm --filter <app> test` / `typecheck` / `lint`, prettier), *never* the
-   full gate.
-3. Repeat until the user signs off.
+   POST `waiting` before this ask.
+2. On their feedback (POST `working` on receipt), re-enter Phase 4 with the
+   feedback as context — the implementer revises and commits. Use **fast
+   per-slice checks only** (`pnpm --filter <app> test` / `typecheck` / `lint`,
+   prettier), *never* the full gate.
+3. Repeat until the user signs off. Each round back to step 1 is its own
+   `waiting`/`working` pair.
 
 Only after signoff proceed to Phase 5. The full gate runs **once**, at the end,
 not per revision. Do not run the full gate or open the PR before the user has
@@ -392,9 +407,9 @@ so and re-scope with the user rather than absorbing it silently.
 
 **Bound the loop at two rounds.** A third round means the disagreement isn't
 resolving on its own: the plan was wrong, the reviewer is wrong, or the finding
-is being misread. All three need a human. Page: stop and surface it to the
-user directly — the finding, the implementer's response, and your read of
-which is correct.
+is being misread. All three need a human. Page: POST `waiting`, then stop and
+surface it to the user directly — the finding, the implementer's response, and
+your read of which is correct.
 
 Page immediately, without waiting for round two, if the implementer marked any
 finding `disputed`, a finding implies a scope change, or the gate fails for a
@@ -440,7 +455,8 @@ and skip this phase. Never commit memory from a path that didn't pass the gate.
 3. Open the PR per `pull-requests`. Title is `{TICKET-ID}: {summary}` when a
    ticket exists, else `{summary}`.
 4. Transition the ticket to In Review; comment `"🔀 PR opened: {pr_url}"`.
-5. Report the PR URL to the user, with a one-sentence summary.
+5. Report the PR URL to the user, with a one-sentence summary. POST `stopped`
+   — this is the Full path's finish point.
 
 **Never merge.** The task ends with the PR open and CI green.
 
@@ -480,4 +496,5 @@ The full gate runs once, after signoff.
 
 An agent reports a failure → re-delegate immediately with the full error output.
 Do not diagnose; the implementer has the tools. Same error three times → page:
-stop and surface it to the user directly with what was tried.
+POST `waiting`, then stop and surface it to the user directly with what was
+tried.
