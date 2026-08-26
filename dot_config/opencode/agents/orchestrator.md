@@ -37,6 +37,21 @@ tell a human where every agent actually is, with no gaps and no stale rows.
 Applies to both paths equally; this section, not either path's own
 instructions, is where it's governed.
 
+**What each state means** — the three states are mutually exclusive and the
+distinction is about who the ball is with, not how busy you are:
+
+- **`working`** — you are actively doing something, on anything, and you do
+  **not** need the user's input to continue. This covers investigation,
+  delegation, running the gate, watching a subagent, or anything else that
+  moves the task forward on its own.
+- **`waiting`** — you are blocked specifically on **the user** — an approval
+  gate, a clarifying question, UAT signoff, or any other point where nothing
+  further happens until they respond. If a subagent is running and you don't
+  need the user for anything right now, that's `working`, not `waiting` —
+  waiting on a subagent is not waiting on a human.
+- **`stopped`** — you are neither working nor waiting: idle at boot, or the
+  task has concluded (finished, abandoned, or handed off).
+
 Every trigger below is mandatory and immediate: the POST happens right before
 (or, for boot, as) the thing it describes — not batched, not skipped because
 it "just happened a moment ago," not deduplicated across a run. If a trigger
@@ -58,12 +73,15 @@ fires ten times in one session, it gets POSTed ten times.
   already real work and must be reported as such.
 - **Immediately before every single point where you stop and wait on the
   user** — every approval gate, every clarifying question, every
-  `AskUserQuestion` call, UAT signoff (Phase 4½), a paused delegation, or any
-  other point where you're blocked pending a human response: `state:
-  waiting`, `description` = what you're waiting on (e.g. `"waiting on Phase 1
-  approval"`). This fires at every occurrence, not once per run — a second
-  question ten minutes later gets its own POST, even if you already reported
-  `waiting` earlier in the same session.
+  `AskUserQuestion` call, UAT signoff (Phase 4½), a delegation paused because
+  it needs a human decision to proceed, or any other point where you're
+  blocked pending a human response: `state: waiting`, `description` = what
+  you're waiting on (e.g. `"waiting on Phase 1 approval"`). This fires at
+  every occurrence, not once per run — a second question ten minutes later
+  gets its own POST, even if you already reported `waiting` earlier in the
+  same session. **A running subagent is not a `waiting` trigger by itself** —
+  if you don't need the user for anything while it runs, you're still
+  `working` (see "What each state means" above).
 - **The instant the user responds and you resume** — one `working` POST for
   every `waiting` POST above, matched one-for-one, updated `description` for
   what resumed. Never leave a `waiting` row standing after the human has
