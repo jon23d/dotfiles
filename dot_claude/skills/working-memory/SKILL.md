@@ -60,10 +60,21 @@ painful fact is not.
    services you're wiring together.
 
 **How to search:**
+- **Always pass `search_all_projects: true` to every `search_notes` call, and
+  never rely on the server's default-project resolution.** The store can
+  silently hold more than one project at the storage layer even though there
+  is supposed to be exactly one canonical one — an unscoped search or
+  `read_note` resolves to a single project via sticky session state, and a
+  search that omits this flag can return a partial result set that looks
+  complete. Do not assume the store currently holds only one project; verify
+  by checking the `project` field on results, and flag anything unrecognized
+  rather than silently ignoring it.
 - Read scope = the **union** of `{ project/<this-repo>, dep/<each declared dep>,
   edge/<each declared edge>, <domain>/global, global/infra }`. This set comes
   from `memory.manifest.yaml` — **do not** reason about which cross-cutting
-  scopes to load; the manifest declares them.
+  scopes to load; the manifest declares them. Filter the full-store search
+  results down to this scope yourself; do not narrow the search itself by
+  project — that reintroduces the same silent-partial-view failure.
 - Use `search_notes` scoped to that union. From a hit, follow relations with
   `build_context` on the `memory://` links to pull the connected dependency/edge
   notes.
@@ -74,6 +85,19 @@ painful fact is not.
 ---
 
 ## WRITE protocol
+
+### Which project to write into
+Never write on default-project resolution — the same sticky-session-state
+problem that breaks unscoped search also breaks an unscoped `write_note` or
+`edit_note`, except worse: a write has no `search_all_projects`-style escape
+hatch, since a note has to land in exactly one place. Before your first write
+in a session, call `list_memory_projects()` and confirm which project you're
+targeting rather than omitting `project` and trusting the default:
+- If there is exactly **one** project, pass its name explicitly on every
+  write. Don't rely on it also being the default — defaults drift.
+- If there is **more than one** project, stop and flag it rather than
+  guessing. More than one project existing at all is itself the failure mode
+  this protocol exists to prevent recurring — don't silently pick one.
 
 ### Store ONLY these
 - **Failure + root cause** — never the failure alone. "X broke" is noise;
@@ -273,7 +297,7 @@ actionable.
 
 | Intent | Tool |
 |---|---|
-| Search a scope | `search_notes` (filter by permalink prefix) |
+| Search a scope | `search_notes` with `search_all_projects: true` (filter by permalink prefix) |
 | Pull connected notes from a hit | `build_context` on `memory://` links |
 | Read a full note | `read_note` |
 | Create/replace a canonical note | `write_note` |
