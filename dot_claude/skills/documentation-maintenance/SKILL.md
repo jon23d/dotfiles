@@ -9,12 +9,6 @@ Every change that touches system behavior, adds a service or dependency,
 changes the API surface, or changes environment configuration must update the
 relevant owned docs. Not optional — no owned doc may be silently skipped.
 
-A from-scratch verification (`from-scratch-run` skill) should already have run
-before this delegation if the change met its trigger conditions — that is the
-caller's responsibility, not this skill's. This skill only updates
-documentation; it does not verify setup and must not dispatch its own
-subagent to do so.
-
 ## Owned documents
 
 Check every one of these against what changed. If a doc doesn't apply, say so

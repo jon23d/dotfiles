@@ -387,14 +387,8 @@ subagents about a fact, and you deliberately lack the context to settle it.
 
 ## Phase 6 — Documentation
 
-Check the `from-scratch-run` skill's trigger conditions against what changed
-this round. If met, delegate a from-scratch verification (read-only,
-`local-task` per that skill) and get PASS/FAIL before continuing — a broken
-setup is worth surfacing immediately, not after docs get rewritten around it.
-
-Then delegate with `documentation-maintenance`. Pass: task name, files
-changed, new services, new endpoints, new environment variables, follow-ups,
-and the from-scratch result.
+Delegate with `documentation-maintenance`. Pass: task name, files
+changed, new services, new endpoints, new environment variables, and follow-ups.
 
 The skill owns which documents are in scope and requires each to be reported on
 explicitly. An omission is a failed delegation, not a silent pass.
