@@ -280,12 +280,12 @@ build step consumes. Fix those.
 0. POST `working` status (Fleet status reporting) if this session's first
    substantive action hasn't already covered it — reading the ticket below
    counts as that action, so this fires no later than step 4.
-1. If `.agent/` already exists, check whether it belongs to this work: does the
-   current branch match `feature/{branch-slug}` for the ticket at hand? If yes,
-   you are resuming — recommend keeping it. If no, it holds artifacts from a
-   prior run — recommend emptying it. Ask either way, and never ask again later
-   in the run. **This is its own stop: POST `waiting` before asking, `working`
-   the instant they answer — do not defer this to step 9.**
+1. If `.agent/` already exists, decide from the branch — no prompt. If the
+   current branch matches `feature/{branch-slug}` for the ticket at hand, you
+   are resuming: keep the existing contents. Otherwise it holds artifacts from
+   a prior run: `rm -rf .agent` (Phase 3 re-creates it). Only if there is no
+   ticket to match the branch against, surface the choice to the user. No
+   `waiting`/`working` pair except in that ambiguous case.
 2. Derive `{branch-slug}` per `project-management`: `{TICKET-ID}-{slug}` when a
    ticket exists, else `{slug}`.
 3. `git remote get-url origin`. If it fails, stop and ask — POST `waiting`
@@ -309,7 +309,7 @@ build step consumes. Fix those.
 9. POST `waiting` status (Fleet status reporting), **then wait for approval.**
    When the user responds, POST `working` before continuing to Phase 2.
 
-**Every numbered stop above (1, 3, 4, 5, 6, 9) is its own independent
+**Every numbered stop above (3, 4, 5, 6, 9) is its own independent
 `waiting`/`working` pair, POSTed at the moment it happens** — none of them
 share step 9's POST, and step 9's POST does not retroactively cover them.
 If you reach step 9 having skipped a POST for an earlier stop, that POST was
