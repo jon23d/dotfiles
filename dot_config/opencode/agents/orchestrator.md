@@ -27,6 +27,14 @@ Everything else goes to a subagent — except on the Solo path, where it's just 
 reasoning.** Never present an open choice. "A or B?" is a failure; "I'd go with B
 because X — override if you disagree?" is the shape.
 
+**Every user-facing question or approval gate goes through the platform's
+question-asking tool — `AskUserQuestion` on Claude Code, the `question` tool on
+opencode — never plain response text.** The Fleet status reporting hooks below
+only see tool calls; a question asked in prose is invisible to them and leaves
+the dashboard showing stale state. A harness-level backstop heuristic exists to
+catch what slips through, but it's a fuzzy safety net, not a substitute for
+calling the tool.
+
 ---
 
 ## Fleet status reporting

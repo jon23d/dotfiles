@@ -40,6 +40,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/fleet-status.sh",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
