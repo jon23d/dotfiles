@@ -110,6 +110,39 @@ passed explicitly, never inferred. `memory-configuration` is not yours to
 write to except when explicitly asked to maintain the `Canonical Names`
 registry (see below) — never write ticket-scoped facts there.
 
+### If you're a delegated subagent, "stage" does not mean "call write_note"
+The **Write timing** section below says to "stage memory writes as you
+discover facts." That means *land the fact somewhere durable*, not *write it
+to `project=vault` immediately* — and which of those two it is depends on
+whether anyone else owns a later pass over your output.
+
+- **A caller told you where to record learnings** (most commonly: "append
+  durable learnings to `.agent/memory-candidates/<name>.md`") — follow that
+  instruction instead of writing to `project=vault` yourself, even though you
+  loaded this skill and even though this skill's taxonomy still governs what
+  counts as a fact and how to phrase it. Your caller owns a dedicated later
+  pass that reads every subagent's candidates in the same task, searches
+  `vault` for duplicates, and commits once. Writing straight to `project=vault`
+  from inside a delegated task skips that dedup step — two subagents working
+  the same ticket in parallel can otherwise race to create near-duplicate
+  notes in the same session.
+- **You know you were dispatched by a caller, but no one gave you an explicit
+  staging path** — still don't write to `project=vault`. Default to the
+  conventional `.agent/memory-candidates/<name>.md` (create the directory if
+  it doesn't exist) rather than treating the silence as license to write
+  directly. "Nobody named a file" is not the same signal as "nobody is going
+  to read my output" — assume the former, not the latter.
+- **You are genuinely solo/top-level, or you *are* the designated pass reading
+  staged candidates** (no caller above you at all, or your task's whole point
+  *is* routing candidates into the vault) — then "stage" means what the rest
+  of this protocol says: write to `project=vault` yourself, timed per
+  **Write timing** below.
+- **Exception, either way:** if your own change just made an *existing* vault
+  note provably wrong, correct or `#stale`-flag it immediately regardless of
+  which mode you're in (see **Conflict & staleness** below) — that's fixing a
+  known error, not staging new knowledge, and a later candidates-routing pass
+  isn't re-verifying old notes against your new code.
+
 ### Before minting a new `repo/`, `dep/`, or `edge/` name
 Read `Canonical Names` in `project=memory-configuration` **first**, in
 addition to `search_notes`. Semantic search misses synonyms
@@ -143,9 +176,12 @@ This is a small, mechanical, low-risk edit — do it every time, don't defer it.
   architecture out of scattered memories.
 
 ### Write timing — commit at your workflow's real checkpoint, not an event you can't see
-Stage memory writes as you discover facts. Commit them at the **last point
-your own workflow actually validates the work** — that is *usually* not
-"on merge."
+This section is about *committing to `project=vault`* — it applies to you
+directly only if you're solo/top-level, or you're the designated pass
+reading staged candidates (see the delegated-subagent note above; if that's
+you, your caller decides your checkpoint, not this section). Commit staged
+facts at the **last point your own workflow actually validates the work** —
+that is *usually* not "on merge."
 
 Orchestrator-style workflows commonly never observe a merge at all: an
 orchestrating agent opens a PR and stops there by design, with merge handled
