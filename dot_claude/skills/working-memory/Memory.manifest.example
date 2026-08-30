@@ -1,37 +1,56 @@
-# memory.manifest.yaml — lives at the repo root of each service.
+# memory.manifest.yaml — lives at the repo root of each repo.
 #
 # Purpose: declares this repo's memory scope and its dependencies/edges so the
 # agent's READ scope is DECLARED, not guessed. The `dependencies` and `edges`
 # lists below are also the canonical-name menu: the agent files cross-cutting
-# facts by picking from these, and must not invent new names.
+# facts by picking from these, and must not invent new names — check the
+# Canonical Names registry (project=memory-configuration in basic-memory)
+# before adding a new one here.
 #
-# Example shown for Innkeeper's `portal` service.
+# Storage layer: all real content lives in the `vault` basic-memory project —
+# always pass project=vault explicitly on every read/write, never rely on the
+# default (the default project is `memory-configuration`, which deliberately
+# holds no domain knowledge — see its Start Here note).
+#
+# Example shown for a hypothetical Innkeeper `portal` service.
 
-domain: innkeeper                 # innkeeper | harness — hard boundary
-project: project/portal           # this repo's own scope
+repo: repo/portal                 # this repo's own scope (this field was
+                                   # named `project:` before — renamed to
+                                   # avoid colliding with basic-memory's own
+                                   # "project" concept, which is the storage
+                                   # bucket, not a taxonomy folder)
+
+# Optional grouping tag — filtering/reporting only, never gates what an agent
+# can read, and never creates a folder. Use when this repo is one of several
+# related repos under one product/client umbrella and you actually expect to
+# filter by that grouping later. Omit if this repo stands alone.
+# group: abcinnkeeper
 
 # Shared dependencies this service touches. Names here are canonical — they map
 # 1:1 to dep/<name> notes in the memory store. Add a dep here BEFORE writing a
-# fact about it, so naming stays consistent across projects.
+# fact about it, so naming stays consistent across projects. Check the
+# Canonical Names registry first — postgres/pgsql/psql/db are the same thing;
+# reuse whichever name is already canonical, never add a variant.
 dependencies:
   - dep/square                    # Square Terminal API
   - dep/postgres                  # Postgres w/ row-level security
   - dep/pg-boss                   # job queue
-  - dep/couchbase                 # via the api service
-  - dep/r2                        # Cloudflare R2 (OCI registry / assets)
 
 # Service-to-service seams this repo participates in. Canonical, undirected;
-# name alphabetically so edge/portal--api == edge/api--portal.
+# name alphabetically so edge/portal--api == edge/api--portal. Both names must
+# already be canonical repo/ or dep/ names — never invent a fresh label for an
+# edge participant.
 edges:
   - edge/portal--api
 
-# Cross-cutting scopes always loaded on top of the above. Keep the global tier
-# thin — infra/tooling only.
+# Cross-cutting scopes always loaded on top of the above. Keep this thin —
+# true org-wide infra/tooling facts only (gitea, doks, litellm, argocd...).
+# Repo-local cross-app facts (e.g. invariants shared by multiple apps inside
+# ONE monorepo) belong in this repo's own repo/<name> scope, not here.
 always_load:
-  - innkeeper/global              # org-wide Innkeeper invariants (rare)
-  - global/infra                  # gitea, doks, litellm — cross-domain infra
+  - global/infra                  # gitea, doks, litellm — org-wide infra
 
 # Resolved READ scope for any ticket in this repo is the union of:
-#   project + dependencies + edges + always_load
+#   repo + dependencies + edges + always_load
 # The agent loads exactly this set and no more. Do not widen at runtime;
 # add scopes here if a new dependency is introduced.

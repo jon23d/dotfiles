@@ -8,7 +8,7 @@ description: >-
   or debug, and stage writes as you discover durable facts. This is NOT for
   product documentation (that lives in Confluence) or repo invariants (AGENTS.md).
   Trigger whenever you start a ticket, hit an unexpected error, touch a shared
-  dependency (Square, Couchbase, R2, pg-boss), or work across a service
+  dependency (Square, Postgres, pg-boss), or work across a service
   seam — even if the ticket doesn't mention memory.
 compatibility: >-
   Requires the `basic-memory` MCP server (see the `basic-memory` entry in your
@@ -40,6 +40,29 @@ memory entry is wrong — fix your work, then correct the entry.
 
 ---
 
+## The storage layer: two projects, on purpose
+
+The `basic-memory` server holds exactly two projects. This is deliberate, not
+the "silently holds more than one" failure mode this skill used to warn about —
+each project has one fixed, non-overlapping job:
+
+- **`vault`** — the one real content project. Every `repo/`, `dep/`, `edge/`,
+  and `global/` note lives here. **Always pass `project=vault` explicitly on
+  every read and write against this skill's taxonomy.** Never omit `project`
+  and trust the default.
+- **`memory-configuration`** — the *default* project (what you land in if you
+  ever forget to pass `project=`). It deliberately holds no domain
+  knowledge — only two notes: a `Start Here` guard note, and the
+  **`Canonical Names` registry** (see below). Landing here by accident is a
+  loud, obvious signal you omitted `project=vault` — not a silent partial view
+  of the real store.
+
+If a tool result ever looks emptier than expected, the first thing to check is
+whether you actually passed `project=vault` — not whether the fact was never
+written.
+
+---
+
 ## READ protocol
 
 No `memory.manifest.yaml` at this repo's root? See **Bootstrapping a new
@@ -60,24 +83,19 @@ painful fact is not.
    services you're wiring together.
 
 **How to search:**
-- **Always pass `search_all_projects: true` to every `search_notes` call, and
-  never rely on the server's default-project resolution.** The store can
-  silently hold more than one project at the storage layer even though there
-  is supposed to be exactly one canonical one — an unscoped search or
-  `read_note` resolves to a single project via sticky session state, and a
-  search that omits this flag can return a partial result set that looks
-  complete. Do not assume the store currently holds only one project; verify
-  by checking the `project` field on results, and flag anything unrecognized
-  rather than silently ignoring it.
-- Read scope = the **union** of `{ project/<this-repo>, dep/<each declared dep>,
-  edge/<each declared edge>, <domain>/global, global/infra }`. This set comes
-  from `memory.manifest.yaml` — **do not** reason about which cross-cutting
-  scopes to load; the manifest declares them. Filter the full-store search
-  results down to this scope yourself; do not narrow the search itself by
-  project — that reintroduces the same silent-partial-view failure.
-- Use `search_notes` scoped to that union. From a hit, follow relations with
-  `build_context` on the `memory://` links to pull the connected dependency/edge
-  notes.
+- **Always pass `project=vault` on every `search_notes`/`read_note` call.**
+  Do not omit it and trust default resolution — the default project
+  (`memory-configuration`) intentionally holds no domain content, so an
+  unscoped call will look empty or irrelevant rather than returning a partial
+  view. This is a safety property, not a bug to work around by guessing.
+- Read scope = the **union** of `{ repo/<this-repo>, dep/<each declared dep>,
+  edge/<each declared edge>, everything listed in this repo's `always_load`
+  (typically just `global/infra`) }`. This set comes from
+  `memory.manifest.yaml` — **do not** reason about which cross-cutting scopes
+  to load; the manifest declares them.
+- Use `search_notes` scoped to `project=vault`, filtered to that union. From a
+  hit, follow relations with `build_context` on the `memory://` links to pull
+  the connected dependency/edge notes.
 - **Treat every result as a lead, not a fact.** Verify against the current code
   before you rely on it, especially if the entry's `@sha` anchor predates recent
   changes.
@@ -87,17 +105,21 @@ painful fact is not.
 ## WRITE protocol
 
 ### Which project to write into
-Never write on default-project resolution — the same sticky-session-state
-problem that breaks unscoped search also breaks an unscoped `write_note` or
-`edit_note`, except worse: a write has no `search_all_projects`-style escape
-hatch, since a note has to land in exactly one place. Before your first write
-in a session, call `list_memory_projects()` and confirm which project you're
-targeting rather than omitting `project` and trusting the default:
-- If there is exactly **one** project, pass its name explicitly on every
-  write. Don't rely on it also being the default — defaults drift.
-- If there is **more than one** project, stop and flag it rather than
-  guessing. More than one project existing at all is itself the failure mode
-  this protocol exists to prevent recurring — don't silently pick one.
+Every write against this skill's taxonomy goes to `project=vault`, always
+passed explicitly, never inferred. `memory-configuration` is not yours to
+write to except when explicitly asked to maintain the `Canonical Names`
+registry (see below) — never write ticket-scoped facts there.
+
+### Before minting a new `repo/`, `dep/`, or `edge/` name
+Read `Canonical Names` in `project=memory-configuration` **first**, in
+addition to `search_notes`. Semantic search misses synonyms
+(`postgres`/`pgsql`/`psql`/`db` don't share tokens) — the registry is a flat
+list precisely so that lookup doesn't depend on search matching. If a
+plausible synonym is already listed, reuse it — never create a variant.
+
+When you do mint a genuinely new canonical name, append one row to
+`Canonical Names` in the same session (`edit_note`, `project=memory-configuration`).
+This is a small, mechanical, low-risk edit — do it every time, don't defer it.
 
 ### Store ONLY these
 - **Failure + root cause** — never the failure alone. "X broke" is noise;
@@ -161,23 +183,44 @@ file it under `portal` and the next agent hits the same wall from `owners`.
 Ask, in order, and stop at the first yes:
 
 1. **About a shared dependency?** → `dep/<name>`
-   (square, couchbase, postgres, pg-boss, r2, litellm, …)
-2. **About the seam between two services?** → `edge/<a>--<b>`
-   (e.g. `edge/portal--api`)
-3. **A project-local implementation detail?** → `project/<repo>`
+   (square, postgres, pg-boss, s3, litellm, …)
+2. **About the seam between two services?** → `edge/<a>--<b>`. Two shapes
+   share this namespace and must stay disambiguated:
+   - **Cross-repo edge** — both sides are independently-registered `repo/`
+     or `dep/` names, already globally unique by construction. Name as
+     `edge/<repo-a>--<repo-b>` (e.g. `edge/chatty--dotfiles`).
+   - **Intra-monorepo seam** — both sides are packages inside ONE monorepo,
+     not independently registered names (e.g. `portal`, `api`, `pricing`
+     inside one product's monorepo). These generic package names are NOT
+     guaranteed unique across different repos — another monorepo could
+     easily have its own `api` package. Qualify BOTH sides with their
+     owning repo, joined by `.`: `edge/<repo>.<sub-a>--<repo>.<sub-b>`
+     (e.g. `edge/abcinnkeeper.portal--abcinnkeeper.api`). This makes
+     collision structurally impossible since `<repo>` is already
+     registry-unique.
+
+   Either way, every participant must already be an existing `repo/`/`dep/`
+   name from `Canonical Names` — never an invented label. If a participant
+   doesn't have a canonical name yet, mint one there first (per the WRITE
+   protocol above), then write the edge.
+3. **A repo-local implementation detail?** → `repo/<repo-name>`.
 4. **An org-wide infra invariant?** → `global/infra` — **rare; keep thin.**
 
-**Domain separation (hard boundary):** every scope sits under a domain —
-`innkeeper/…` or `harness/…`. Only shared infra/tooling (gitea, r2, doks,
-litellm) may live in the cross-domain `global/infra`. A Square gotcha must reach
-every Innkeeper service and **never** land in a harness agent's context.
+**No domain hard boundary.** Every repo's facts live in the flat structure
+above — there is no mandatory grouping tier, and nothing gates what an agent
+can read by product/client/team. If a repo's `memory.manifest.yaml` declares
+an optional `group: <name>` tag, treat it as filtering/reporting metadata
+only — it never creates a folder (`group/<name>` is not a scope) and it never
+restricts a read.
 
 **Naming discipline — this is where taxonomies rot:**
-- Entity and dependency names come from `memory.manifest.yaml`. **Do not invent
-  variants.** `search_notes` for an existing entity before creating one; if
-  `Square Terminal API` exists, do not create `square-api`.
-- One **canonical** note per dependency and per edge. Projects *backlink* to it
-  via relations — never fork a per-project copy of a shared fact.
+- Entity, dependency, and edge names come from `memory.manifest.yaml`'s
+  `dependencies`/`edges` lists **and** the `Canonical Names` registry in
+  `memory-configuration`. **Do not invent variants.** Check the registry
+  before creating one; if `dep/postgres` exists, do not create
+  `dep/pgsql` or `dep/psql`.
+- One **canonical** note per dependency and per edge. Repos *backlink* to it
+  via relations — never fork a per-repo copy of a shared fact.
 
 ---
 
@@ -190,30 +233,39 @@ have nowhere correct to land. Create one before doing anything else, using
 copy its shape and keep its comments; they're what keeps the *next* agent
 from re-deriving all of this from scratch.
 
-1. **`domain`** — `innkeeper` or `harness`. Determine this from what the repo
-   actually *is* (an Innkeeper product service vs. agent/harness tooling),
-   not by guessing. If genuinely ambiguous, ask rather than pick.
-2. **`project`** — `project/<repo-name>`, from the repo's own name.
+1. **`repo`** — `repo/<repo-name>`, from the repo's own name. Check
+   `Canonical Names` (`project=memory-configuration`) first in case this repo
+   already has a canonical name recorded under something slightly different.
+2. **`group`** *(optional)* — only if this repo is one of several related
+   repos under one product/client umbrella and you actually expect to filter
+   by that grouping later. Skip it otherwise; it's metadata, not structure.
 3. **`dependencies`** — list only the *shared* external dependencies this repo
    actually touches (a database, a third-party API, a queue — the kind of
    thing worth a canonical `dep/<name>` note per the scope-routing rules
-   above), not every library it imports. For each candidate, `search_notes`
-   for an existing `dep/<name>` note **before** writing the manifest entry —
-   reuse the name that already exists rather than inventing a variant
-   (`postgres`, never `postgres-db` or `pg`). Also check whether another
-   repo's manifest, or an existing `edge/` note, already refers to this
-   dependency under a name you weren't expecting, and match it.
+   above), not every library it imports. For each candidate, check
+   `Canonical Names` **and** `search_notes` (`project=vault`) for an existing
+   `dep/<name>` note **before** writing the manifest entry — reuse the name
+   that already exists rather than inventing a variant (`postgres`, never
+   `postgres-db` or `pg`). Also check whether another repo's manifest, or an
+   existing `edge/` note, already refers to this dependency under a name you
+   weren't expecting, and match it.
 4. **`edges`** — for each other service this repo directly calls or is called
    by, add `edge/<a>--<b>` with the two names alphabetical (`edge/portal--api`,
    never `edge/api--portal`), matching whatever the other side's manifest
-   already declares if one exists.
-5. **`always_load`** — default to `<domain>/global` and `global/infra` unless
-   there's a specific reason to add more; keep this tier thin, same as the
-   naming-discipline rule above.
-6. Write the file at the repo root. Treat the first draft as **provisional**:
-   flag the `domain`/`dependencies`/`edges` choices for human review rather
-   than treating them as settled — a wrong scope here silently misroutes
-   every future read and write for this repo, and nothing else will catch it.
+   already declares if one exists. Both names must already be canonical
+   `repo/` or `dep/` names — mint them first if they aren't.
+5. **`always_load`** — default to `global/infra` unless there's a specific
+   reason to add more; keep this tier thin, same as the naming-discipline rule
+   above. Repo-local cross-cutting facts (e.g. invariants shared by several
+   apps inside one monorepo) belong in this repo's own `repo/<name>` scope,
+   not in a separate always-loaded tier.
+6. Write the file at the repo root, **and** add a row for `repo/<repo-name>`
+   (plus any new `dep/`/`edge/` names) to `Canonical Names`
+   (`project=memory-configuration`) in the same pass. Treat the first draft as
+   **provisional**: flag the `dependencies`/`edges` choices for human review
+   rather than treating them as settled — a wrong scope here silently
+   misroutes every future read and write for this repo, and nothing else will
+   catch it.
 
 ---
 
@@ -236,13 +288,12 @@ permalink: dep/square
 ## Observations
 - [gotcha] Terminal checkout webhook can fire before our API commits the local
   record; poll GET /checkouts/{id} instead of trusting webhook ordering
-  #innkeeper (as of innkeeper/api@a1b2c3d)
+  (as of abcinnkeeper@a1b2c3d)
 - [procedure] Sandbox device pairing codes expire in 5m; regenerate per test run
-  #innkeeper
 
 ## Relations
-- surfaced_in [[project/portal]]
-- surfaced_in [[project/owners]]
+- surfaced_in [[repo/portal]]
+- surfaced_in [[repo/owners]]
 - at_seam [[edge/portal--api]]
 ```
 
@@ -273,19 +324,20 @@ permalink: dep/square
 ## Examples
 
 **Good:**
-> `dep/couchbase` — `- [root-cause] Autonomous Operator marks the pod Ready ~40s
-> before the cluster actually accepts writes; readiness probe lies. Gate writes
-> on a real query, not pod status #innkeeper (as of innkeeper/api@7f3a1c9)`
-> with relations `surfaced_in [[project/api]]`.
+> `dep/postgres` — `- [root-cause] Row-level security policies are silently
+> bypassed when the app connects as a superuser role; connection pooling must
+> use the non-superuser app role, not the migration role. (as of
+> abcinnkeeper@7f3a1c9)`
+> with relations `surfaced_in [[repo/api]]`.
 
 Why: root cause not just symptom, correct scope (the dependency), anchored,
 actionable.
 
 **Bad — and why:**
-> `project/portal` — "Square was flaky today, added a retry."
+> `repo/portal` — "Square was flaky today, added a retry."
 - Wrong scope (belongs to `dep/square`), no root cause, no anchor, narration.
 
-> `dep/couchbase` — "The operator might be slow sometimes?"
+> `dep/postgres` — "The connection pool might be slow sometimes?"
 - Speculation, unconfirmed. Unstorable.
 
 > Pasting the full `OwnerSignup` type into a note.
@@ -297,13 +349,14 @@ actionable.
 
 | Intent | Tool |
 |---|---|
-| Search a scope | `search_notes` with `search_all_projects: true` (filter by permalink prefix) |
+| Search vault | `search_notes` with `project=vault` (filter by permalink prefix) |
 | Pull connected notes from a hit | `build_context` on `memory://` links |
-| Read a full note | `read_note` |
-| Create/replace a canonical note | `write_note` |
-| Refine in place / supersede | `edit_note` |
+| Read a full note | `read_note` with `project=vault` |
+| Check/update canonical names before minting a new scope | `read_note`/`edit_note` on `Canonical Names`, `project=memory-configuration` |
+| Create/replace a canonical note | `write_note` with `project=vault` |
+| Refine in place / supersede | `edit_note` with `project=vault` |
 
 Read scope, dependency names, and edges are all declared in
 `memory.manifest.yaml` (see the example beside this skill). When in doubt about
-where a fact goes, the manifest's dependency list is your menu — pick from it,
-don't invent.
+where a fact goes, the manifest's dependency list — and the `Canonical Names`
+registry — are your menu. Pick from them, don't invent.
