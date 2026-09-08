@@ -201,6 +201,8 @@ then add for what the slice actually touches:
 - Payments, Web Payments SDK → `square`
 - A new service, container, or deployment → `dockerfile`,
   `cicd-pipeline-creation`
+- Scaffolding a new Go service, or touching an existing one's layout, task
+  runner, or local dev environment → `golang-project-layout`
 - Kubernetes manifests requested, or already in use in this repo →
   `kubernetes-manifests` (the skill defines its own confirm-with-user gate
   before producing manifests)
