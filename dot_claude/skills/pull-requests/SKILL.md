@@ -9,7 +9,7 @@ All pull request operations use the `gitea-mcp` tools. These are tool calls avai
 
 ## Before opening a PR
 
-1. **Run prettier and fix all formatting issues.** Run `npx prettier --check .` (or the project's equivalent). If it fails, run `npx prettier --write .`, commit the changes, and push. Do not open a PR until prettier passes with zero errors.
+1. **Run the project's format checker and fix all formatting issues.** If it fails, run the project's auto-fix/format command, commit the changes, and push. Do not open a PR until the formatter passes with zero errors. See stack-specific guidance for the concrete command in a TypeScript repo.
 2. **Confirm the branch is pushed.** Run `git status` and `git push` if needed. A PR against an unpushed branch will fail or be empty.
 3. **Confirm there are no merge conflicts.** Run `git fetch origin` then `git merge origin/<base>` (or `git rebase origin/<base>`). Resolve any conflicts before proceeding.
 4. **Confirm the branch name and PR title follow the `project-management` skill's branch-naming and PR-title conventions** (both require the ticket ID when a ticket exists — e.g. branch `feature/PROJ-42-add-auth`, PR title `PROJ-42: Add auth`). That skill is the source of truth for the exact convention; don't re-derive or restate it here.
@@ -208,3 +208,7 @@ Issue tracking lives in Jira, not Gitea, so there is no `Closes #N` auto-close m
 ## After opening the PR
 
 Use the `project-management` skill to update the linked Jira ticket (e.g. add the PR URL as a comment or link, move status) — do not use `gitea-mcp_issue_write`, which operates on Gitea issues, not Jira tickets.
+
+## Stack-specific guidance
+
+Read `references/typescript.md` for TypeScript/Node-specific implementation detail before applying this skill to a TypeScript repo. A Go equivalent (`references/golang.md`) does not exist yet — if this skill applies to a Go repo, flag the gap rather than force-fitting the TypeScript reference.
