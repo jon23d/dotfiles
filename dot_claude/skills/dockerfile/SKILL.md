@@ -157,4 +157,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ## Stack-specific guidance
 
-Read `references/typescript.md` for TypeScript/Node-specific implementation detail before applying this skill to a TypeScript repo. A Go equivalent (`references/golang.md`) does not exist yet — if this skill applies to a Go repo, flag the gap rather than force-fitting the TypeScript reference.
+Read `references/typescript.md` for TypeScript/Node-specific implementation detail, or `references/golang.md` for Go-specific implementation detail, before applying this skill. Note: the Go reference was not empirically build-tested to the same standard as the TypeScript one — see its own caveat at the top.
