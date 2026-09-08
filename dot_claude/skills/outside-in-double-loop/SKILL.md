@@ -18,7 +18,7 @@ This skill governs **implementation ordering**. The `tdd` skill governs the red-
 ## The sequence
 
 **Step 1 — Write the outer test.**
-The test describes user-facing behavior: given this request, expect this response. Every collaborator is a `vi.fn()` / mock. Do not create interface files, type files, or "vocabulary" files yet. Let the test drive what types you need. Define stub shapes inline in the test file.
+The test describes user-facing behavior: given this request, expect this response. Every collaborator is a mock/stub. Do not create interface files, type files, or "vocabulary" files yet. Let the test drive what types you need. Define stub shapes inline in the test file.
 
 **Step 2 — Run the test. Watch it fail.**
 The failure is typically "module not found" or "function not found." This is correct.
@@ -76,13 +76,13 @@ Do not open a new file until the current file's test is green. If you discover a
 
 You are building `InvoiceRepository`. Its test stubs `SequenceGenerator`:
 
-```ts
-// invoice-repository.test.ts
-const sequenceGenerator = { next: vi.fn().mockResolvedValue('INV-00001') };
-const repo = new InMemoryInvoiceRepository(sequenceGenerator);
+```
+// invoice-repository.test
+sequenceGenerator = a stub whose `next()` resolves to 'INV-00001'
+repo = new InMemoryInvoiceRepository(sequenceGenerator)
 ```
 
-`InvoiceRepository` test goes green. Now update the queue:
+See the stack-specific guidance for the concrete form of this example. `InvoiceRepository` test goes green. Now update the queue:
 
 ```
 // Task queue:
@@ -114,3 +114,7 @@ Pop `SequenceGenerator`. Write its test. It has no dependencies — no stubs nee
 - [ ] Task queue written with all stubbed dependencies
 - [ ] Each inner loop: test written, stubs for its dependencies, test green, queue updated
 - [ ] Queue empty — done
+
+## Stack-specific guidance
+
+Read `references/typescript.md` for TypeScript/Node-specific implementation detail before applying this skill to a TypeScript repo. A Go equivalent (`references/golang.md`) does not exist yet — if this skill applies to a Go repo, flag the gap rather than force-fitting the TypeScript reference.
