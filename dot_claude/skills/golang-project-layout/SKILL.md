@@ -178,8 +178,10 @@ func run(logger *slog.Logger) error {
 ```
 
 Note the graceful-shutdown path: `signal.NotifyContext` + `srv.Shutdown`.
-This only works correctly against a **built binary** — see the `go run`
-gotcha under "Confirmed gotchas" below.
+This works fine under everyday `go run ./cmd/widgetsvc` iteration too —
+Ctrl+C sends `SIGINT` to the whole foreground process group, which reaches
+the child directly. It only fails for a *targeted* `kill -TERM <pid>` aimed
+specifically at a `go run`-wrapped process — see "Confirmed gotchas" below.
 
 ## The bind-address rule
 
@@ -449,12 +451,18 @@ will collide across two different project names for the same file.
 
 ## Confirmed gotchas (empirically verified, not theoretical)
 
-- **`go run` breaks graceful shutdown.** Sending `SIGTERM` to a `go run`
-  wrapper process kills only the wrapper — the compiled child process never
-  receives the signal and keeps the port bound (confirmed via `ps --ppid` /
-  `ss -ltnp` before and after). Always build a binary and signal that
-  instead; this is exactly why `just build` + running `bin/widgetsvc`
-  directly is the pattern, not `go run ./cmd/widgetsvc`.
+- **`go run` doesn't forward a targeted signal to its child process** — this
+  is a narrow gotcha, not a reason to avoid `go run` generally. Everyday
+  iteration (`go run ./cmd/widgetsvc`, Ctrl+C to stop) is fine: Ctrl+C sends
+  `SIGINT` to the whole foreground process group, which reaches the child
+  directly. What actually breaks is a *targeted* `kill -TERM <pid>` aimed at
+  the `go run` process specifically (e.g. from a smoke-test script) — only
+  the wrapper gets it, the compiled child never does and keeps the port
+  bound (confirmed via `ps --ppid` / `ss -ltnp` before and after). If you're
+  specifically testing or relying on signal-based graceful shutdown, do it
+  against a built binary (`just build`, then run `bin/widgetsvc` and signal
+  that) — not because `go run` is bad, but because that one specific check
+  needs a real target for the signal to land on.
 - **Port collisions with other local projects are real**, not hypothetical —
   hit directly during verification (another project's Postgres already held
   5432). Don't hardcode the "obvious" port; make it easy to remap.

@@ -114,11 +114,13 @@ func TestWidgetsStore_Integration(t *testing.T) {
 - **`t.Setenv` and `t.Parallel()` are hard-incompatible** — `t.Setenv`
   panics if called in a test marked parallel. A table-driven test that uses
   `t.Setenv` per case cannot also call `t.Parallel()` in that subtest.
-- **`go run` breaks signal-based graceful shutdown** — confirmed via
-  `ps`/`ss`: `kill -TERM` on a `go run` wrapper kills only the wrapper: the
-  compiled child process never receives the signal and keeps its port
-  bound. Never test shutdown behavior through `go run` — build a binary
-  first (`just build`) and signal that.
+- **`go run` doesn't forward a targeted signal to its child** — a *targeted*
+  `kill -TERM <pid>` on a `go run` wrapper kills only the wrapper; the
+  compiled child never receives it and keeps its port bound (confirmed via
+  `ps`/`ss`). This doesn't make `go run` bad for everyday use — Ctrl+C works
+  fine, it signals the whole process group. It only matters if you're
+  specifically testing signal-based graceful shutdown: do that against a
+  built binary (`just build`), not a `go run`-wrapped process.
 - **`httptest`'s `defer srv.Close()` blocks until in-flight handlers
   return.** If a handler under test blocks on a channel/timeout, register
   any channel-release `defer` *after* `Close`'s defer (Go defers run LIFO)
