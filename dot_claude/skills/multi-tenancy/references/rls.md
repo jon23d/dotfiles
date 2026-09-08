@@ -1,6 +1,6 @@
 # PostgreSQL Row-Level Security for Multi-Tenancy
 
-Use this when you need DB-level tenant isolation in addition to (or instead of) the application-layer Prisma extension approach.
+Use this when you need DB-level tenant isolation in addition to (or instead of) the application-layer query-scoping approach.
 
 ## When RLS is appropriate
 
@@ -8,7 +8,7 @@ Use this when you need DB-level tenant isolation in addition to (or instead of) 
 - Direct DB access by admin tools or analytics queries that bypass the application
 - Defense-in-depth: a compromised application layer still cannot read another tenant's rows
 
-## Setup with Prisma + PostgreSQL
+## Setup with PostgreSQL
 
 ### 1. Enable RLS on the table
 
@@ -23,24 +23,13 @@ CREATE POLICY tenant_isolation ON "Project"
 
 ### 2. Set the tenant context per connection
 
-Prisma doesn't natively support per-query session variables. Use `$executeRaw` to set the variable before each query, or use an interactive transaction:
+Most ORMs/query layers don't natively support per-query session variables. Set it explicitly at the start of each transaction with a raw SQL command:
 
-```typescript
-export async function withTenantRLS<T>(
-  tenantId: string,
-  fn: (tx: Prisma.TransactionClient) => Promise<T>,
-): Promise<T> {
-  return prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT set_config('app.tenant_id', ${tenantId}, true)`;
-    return fn(tx);
-  });
-}
-
-// Usage in route handler
-const projects = await withTenantRLS(request.user.tenantId, (tx) =>
-  tx.project.findMany({ orderBy: { createdAt: 'desc' } }),
-);
+```sql
+SELECT set_config('app.tenant_id', $1, true)
 ```
+
+Run this as the first statement inside the same transaction as the queries it should apply to — see stack-specific guidance for how to wire this into your query layer.
 
 ### 3. Create a restricted role
 
@@ -49,31 +38,25 @@ const projects = await withTenantRLS(request.user.tenantId, (tx) =>
 CREATE ROLE app_user;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user;
 
--- The superuser/owner role used by Prisma migrations should be separate
+-- The superuser/owner role used for migrations should be separate
 ```
 
-### 4. Prisma connection string
+### 4. Connection configuration
 
-```env
-# Use the restricted role for application queries
-DATABASE_URL="postgresql://app_user:password@localhost:5432/mydb"
-
-# Use a privileged role for migrations only
-MIGRATION_DATABASE_URL="postgresql://postgres:password@localhost:5432/mydb"
-```
+Configure your application's database connection to use the restricted role for normal queries, and reserve a privileged role for running migrations only — never point the migration tooling and the application at the same role.
 
 ## Caveats
 
 - **Performance:** RLS adds a policy evaluation step to every query. Index `tenantId` on every table.
-- **Migrations:** Run migrations with a role that has `BYPASSRLS` or is the table owner. Don't use the app role for `prisma migrate deploy`.
+- **Migrations:** Run migrations with a role that has `BYPASSRLS` or is the table owner. Don't use the app role for running migrations.
 - **Testing:** RLS policies are bypassed by superusers. Test with the restricted app role.
 - **`FORCE ROW LEVEL SECURITY`:** Without this, the table owner bypasses RLS. Always set it.
 
-## Combining RLS with the Prisma extension approach
+## Combining RLS with the application-layer approach
 
 The recommended pattern is to use both:
 
-- Prisma client extension (application layer) — prevents developer mistakes, compile-time safety
+- Application-layer query scoping (e.g. a Prisma client extension — see stack-specific guidance) — prevents developer mistakes, compile-time safety
 - RLS (database layer) — defense-in-depth, protects against compromised application or direct DB access
 
-The Prisma extension filters are redundant when RLS is active, but the redundancy is intentional.
+The application-layer filters are redundant when RLS is active, but the redundancy is intentional.
