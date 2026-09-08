@@ -1,6 +1,6 @@
 ---
 name: postgres-schema-design
-description: Use when designing or modifying a PostgreSQL database schema, adding tables or columns, creating indexes, or making any structural database change. This project uses Prisma.
+description: Use when designing or modifying a PostgreSQL database schema, adding tables or columns, creating indexes, or making any structural database change.
 ---
 
 # Postgres Schema Design
@@ -11,106 +11,13 @@ description: Use when designing or modifying a PostgreSQL database schema, addin
 
 The migration tool is the source of truth for schema state.
 
-## Step 1: Confirm Prisma is set up
-
-Look for `prisma/schema.prisma`. If it does not exist, ask before proceeding.
-
----
-
-## Prisma Workflows
-
-### New project — initial schema
-
-1. `npx prisma init` (creates `prisma/schema.prisma` and `.env`)
-2. Set provider to `postgresql`
-3. Define your models (see quality rules below)
-4. `npx prisma migrate dev --name init`
-5. Commit: `prisma/schema.prisma` + `prisma/migrations/` folder
-
-### Adding or changing tables/columns
-
-1. Edit `prisma/schema.prisma` — models, fields, relations, indexes, constraints
-2. `npx prisma migrate dev --name <descriptive_name>` (e.g. `add_teams`, `add_stripe_customer_id_to_orgs`)
-3. **Review** the generated `prisma/migrations/<timestamp>_<name>/migration.sql` — check for unintended `DROP` statements, correct `ON DELETE` clauses, FK indexes
-4. Commit `prisma/schema.prisma` and the migration folder together
-5. In CI: `npx prisma migrate deploy && npx prisma generate`
-
-### Prisma schema patterns
-
-**UUID primary key:**
-
-```prisma
-id String @id @default(uuid())
-```
-
-**Timestamps (audit columns):**
-
-```prisma
-createdAt DateTime  @default(now()) @map("created_at")
-updatedAt DateTime  @updatedAt      @map("updated_at")
-deletedAt DateTime?                 @map("deleted_at")
-```
-
-**FK with explicit delete behavior:**
-
-```prisma
-organizationId String       @map("organization_id")
-organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-```
-
-**Index on FK:**
-
-```prisma
-@@index([organizationId])
-```
-
-**Unique constraint:**
-
-```prisma
-@@unique([organizationId, email])
-```
-
-**Enum:**
-
-```prisma
-enum SubscriptionStatus {
-  TRIALING
-  ACTIVE
-  PAST_DUE
-  CANCELED
-  PAUSED
-}
-```
-
-**Explicit join table (preferred over implicit many-to-many):**
-
-```prisma
-model TeamMember {
-  teamId    String   @map("team_id")
-  userId    String   @map("user_id")
-  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now()) @map("created_at")
-
-  @@id([teamId, userId])
-  @@index([userId])
-  @@map("team_members")
-}
-```
-
-### Prisma — what not to do
-
-- Do not hand-write `migration.sql` — Prisma tracks state via checksum
-- Do not run `prisma db push` in production or development (unless prototyping with accepted DB reset)
-- Do not use `SERIAL`/`BIGSERIAL` for PKs
-
 ---
 
 ## Schema Quality Rules
 
 ### Column types
 
-- **PKs:** `UUID` (`gen_random_uuid()` / `@default(uuid())`) — not `SERIAL`/`BIGSERIAL`
+- **PKs:** `UUID` (`gen_random_uuid()`) — not `SERIAL`/`BIGSERIAL`
 - **Timestamps:** `TIMESTAMPTZ` — not `TIMESTAMP` (always UTC)
 - **Enums:** DB-level `ENUM` type — not `VARCHAR` + app validation
 - **Structured data:** `JSONB` — not `TEXT` storing JSON
@@ -183,4 +90,7 @@ deleted_at  TIMESTAMPTZ  -- soft delete; NULL means active
 - About to create a `.sql` file outside the migrations folder → use the framework
 - About to run `CREATE TABLE` in a scratch SQL block → use the schema file
 - Model edited but no migration generated → incomplete
-- Migration exists but `prisma generate` not done → client out of sync
+
+## Stack-specific guidance
+
+Read `references/typescript.md` for TypeScript/Node-specific implementation detail before applying this skill to a TypeScript repo. A Go equivalent (`references/golang.md`) does not exist yet — if this skill applies to a Go repo, flag the gap rather than force-fitting the TypeScript reference.
