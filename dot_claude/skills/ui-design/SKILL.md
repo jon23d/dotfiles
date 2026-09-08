@@ -1,16 +1,6 @@
 ---
 name: ui-design
-description: React UI design principles and conventions. Load when building or modifying any user interface or React components. Covers application type detection, visual standards, component design and structure, Mantine (business apps) and Tailwind (consumer apps), accessibility, responsiveness, state management, data fetching, testing, and in-app help patterns.
----
-
-## Determine application type first
-
-**Business-facing** (internal tools, dashboards, admin panels, B2B SaaS): Use **Mantine**. Do not introduce Tailwind.
-
-**Consumer-facing** (marketing sites, consumer products): Use **Tailwind CSS** + **Radix UI** for accessible primitives. Do not introduce Mantine.
-
-Do not mix the two systems.
-
+description: UI design principles and conventions for any frontend stack. Load when building or modifying any user interface or component-based UI. Covers visual standards, component design, accessibility, responsiveness, state management, data fetching, testing, and in-app help patterns.
 ---
 
 ## Visual standards
@@ -56,86 +46,31 @@ Do not mix the two systems.
 
 ## Component design
 
-**One component, one responsibility.** A component file should not exceed 150 lines.
+**One component, one responsibility.** Keep components small — split a component when it takes on more than one job. Extract every visually distinct section as its own component. Deep nesting in a component's markup is a sign you missed an extraction.
 
-### Decomposition rules
+Separate data from presentation: a component that fetches or mutates data should not also contain complex markup — extract the data-fetching concern (a hook, a composable, a service call) and let the component focus on rendering.
 
-**Separate data from presentation.** A component that calls `useQuery`/`useMutation` should not contain complex JSX — extract data-fetching into a custom hook, render focused children.
-
-```tsx
-// Good — hook owns data, page composes focused children
-function useUserDashboard() {
-  const user = useQuery({ queryKey: ['user'], queryFn: fetchUser });
-  const projects = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
-  return { user, projects };
-}
-
-function UserDashboard() {
-  const { user, projects } = useUserDashboard();
-  return (
-    <Stack>
-      <UserHeader user={user.data} isLoading={user.isLoading} />
-      <ProjectList projects={projects.data} isLoading={projects.isLoading} />
-    </Stack>
-  );
-}
-```
-
-**Extract every visually distinct section as its own component.** More than 3 `useState` calls is a smell. JSX nesting deeper than 3 levels means you missed an extraction.
-
-### File structure
-
-One component per file. Related files in a folder:
-
-```
-UserCard/
-├── index.ts
-├── UserCard.tsx
-├── UserCard.test.tsx
-└── types.ts
-```
-
-### Props
-
-Explicit TypeScript interfaces. Required props are necessary, optional have defaults. Prefer callbacks over store references. Never use `React.FC`.
-
-### Composition over configuration
-
-Prefer composing smaller components over boolean flag props (`showHeader`, `compact`, `withBorder`).
-
-### Never put logic in JSX
-
-Extract conditionals and transformations into variables before the return statement.
+Never put logic directly in the markup/template. Extract conditionals and transformations into variables before the render step.
 
 ---
 
-## Data fetching — always use React Query
+## Data fetching
 
-Never use `useEffect` + `useState` for data fetching.
+Use whatever caching data-fetching layer your framework's ecosystem provides — never hand-roll fetching with raw local-state juggling (loading/error/data flags managed by hand) when a caching layer is available.
 
-- **Service layer first.** Data fetching in `@/services`. Services call the typed client, return typed objects.
-- **Custom hooks as the interface.** Components call hooks, not services directly. Hooks use TanStack Query internally.
-- **No hardcoded URLs.** Endpoint definitions in generated client or service layer only.
-- **Validate at the boundary** with Zod — never `as SomeType`.
+- **Service layer first.** Keep data-fetching calls in a dedicated services layer that calls the typed client and returns typed objects.
+- **A hook/composable/interface layer between components and services.** Components consume that interface, not the service directly.
+- **No hardcoded URLs.** Endpoint definitions live in the generated client or service layer only.
+- **Validate at the boundary.** Never trust-cast an HTTP response into a type — validate it against a schema.
 
 ---
 
 ## State management
 
-- **Local UI state** → `useState` or `useReducer`
-- **Shared UI state** → React context or Zustand (context for infrequent changes, Zustand for frequent)
-- **Server state** → React Query. Never replicate into `useState`.
-- Do not reach for Redux.
-
----
-
-## Business apps: Mantine conventions
-
-Use Mantine components before building custom. Style with `classNames` + CSS Modules → Mantine CSS variables → `styles` prop. Never hardcoded hex values — use theme tokens. Forms with `@mantine/form`.
-
-## Consumer apps: Tailwind conventions
-
-Tailwind utility classes exclusively. Radix UI for interactive primitives. Establish design tokens in `tailwind.config.ts`. No arbitrary values except one-off pixel-perfect needs. Prettier plugin for class ordering.
+- **Local UI state** → component-local state.
+- **Shared UI state** → a shared-state mechanism appropriate to your framework (a context/provider mechanism for infrequent changes, a lightweight store for frequent changes).
+- **Server state** → the caching data-fetching layer. Never replicate it into local state.
+- Reach for a full state-management framework (e.g. Redux-style global stores) only when the lighter options above are genuinely insufficient.
 
 ---
 
@@ -151,7 +86,7 @@ Tailwind utility classes exclusively. Radix UI for interactive primitives. Estab
 
 ## Responsiveness
 
-Design mobile first. Mantine: responsive props. Tailwind: mobile-first breakpoint prefixes. No hardcoded widths for content containers.
+Design mobile first. No hardcoded widths for content containers.
 
 ---
 
@@ -183,14 +118,14 @@ Icon/illustration, specific heading, 1–2 sentences explaining the entity, prim
 
 ## Tests — every component
 
-Use React Testing Library. Query by accessible role, label, or visible text — never `getByTestId`. Use `userEvent`. Test loading, error, success states. Domain objects from test factories — no inline literals.
+Query by accessible role, label, or visible text — never a test-id-only hook. Simulate real user interaction rather than firing raw events. Test loading, error, success states. Use domain objects from test factories — no inline literals.
 
 ## Red flags — stop and reassess
 
-- `useEffect` + `useState` for data fetching → use React Query
-- `response.json() as SomeType` → validate with Zod
-- Component exceeds 150 lines → split
-- More than 3 boolean props → consider composition
 - Hardcoded hex values → use design tokens
 - `div`/`span` with `onClick` → use `<button>`
 - About to skip tests → write them now
+
+## Stack-specific guidance
+
+Read `references/typescript.md` for TypeScript/Node-specific implementation detail before applying this skill to a TypeScript repo. A Go equivalent (`references/golang.md`) does not exist yet — if this skill applies to a Go repo, flag the gap rather than force-fitting the TypeScript reference.
