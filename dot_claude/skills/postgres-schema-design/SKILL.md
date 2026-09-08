@@ -93,4 +93,4 @@ deleted_at  TIMESTAMPTZ  -- soft delete; NULL means active
 
 ## Stack-specific guidance
 
-Read `references/typescript.md` for TypeScript/Node-specific implementation detail before applying this skill to a TypeScript repo. A Go equivalent (`references/golang.md`) does not exist yet — if this skill applies to a Go repo, flag the gap rather than force-fitting the TypeScript reference.
+Read `references/typescript.md` for TypeScript/Node-specific implementation detail, or `references/golang.md` for Go-specific implementation detail (pgx + sqlc + goose), before applying this skill.
