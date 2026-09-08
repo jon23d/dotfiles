@@ -1,13 +1,5 @@
 # Dockerfile — Go
 
-**Caveat up front:** unlike the other Go reference files in this skill set,
-this one was **not** empirically pressure-tested end-to-end (the verification
-pass covered local dev tooling exhaustively — Postgres, migrations, the
-service running live, both test suites, linting, formatting — but did not
-build and run a production container). It's grounded in well-established,
-standard Go+Docker practice rather than guessed, but treat it as needing a
-real build-and-run check before leaning on it for something high-stakes.
-
 The universal rules in the main skill (base-image pinning, layer ordering,
 multi-stage builds, no secrets in `ENV`/`ARG`/`RUN`, non-root user,
 `.dockerignore`, `HEALTHCHECK`, image-size checklist) apply as-is.
