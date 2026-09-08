@@ -7,8 +7,6 @@ description: Use when writing, reviewing, or editing a Dockerfile or docker-comp
 
 Every Dockerfile decision affects security, build speed, and image size. Apply these rules without exception.
 
-**This project is Node.js / TypeScript.** Read `node.md` before writing any code.
-
 ## Base image — pin to a specific version tag
 
 Never use `latest`. Pin to a specific version tag. Prefer minimal variants.
@@ -148,7 +146,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ## Checklist
 
 - [ ] Base image pinned to specific version tag, slim/alpine variant used
-- [ ] Node.js-specific rules applied (read `node.md`)
+- [ ] Stack-specific rules applied (see stack-specific guidance below)
 - [ ] Dependency files copied and installed before source code
 - [ ] Multi-stage build used; final stage contains only runtime artifacts
 - [ ] No secrets in `ENV`, `ARG`, or `RUN` commands
@@ -156,3 +154,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 - [ ] `.dockerignore` created and includes `.git`, `.env`, build artifacts
 - [ ] `HEALTHCHECK` defined with appropriate path and interval
 - [ ] Image size verified with `docker images` after build
+
+## Stack-specific guidance
+
+Read `references/typescript.md` for TypeScript/Node-specific implementation detail before applying this skill to a TypeScript repo. A Go equivalent (`references/golang.md`) does not exist yet — if this skill applies to a Go repo, flag the gap rather than force-fitting the TypeScript reference.

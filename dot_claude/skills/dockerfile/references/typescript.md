@@ -1,4 +1,6 @@
-# Node.js
+# Dockerfile — TypeScript
+
+Node.js-specific Dockerfile conventions.
 
 ## Base image
 
