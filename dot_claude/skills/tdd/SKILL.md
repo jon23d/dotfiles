@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: Use when writing any code — functions, modules, APIs, UI components, scripts, or any other implementation. Use when asked to "implement", "build", "write", "add", "create", or "refactor" anything that involves code. Also covers TypeScript/Vitest testing patterns, factories, mocking, and integration tests with testcontainers.
+description: Use when writing any code — functions, modules, APIs, UI components, scripts, or any other implementation. Use when asked to "implement", "build", "write", "add", "create", or "refactor" anything that involves code. Also covers testing patterns, factories, mocking, and integration tests against real dependencies.
 ---
 
 # TDD — Test-Driven Development
@@ -33,9 +33,9 @@ When reporting back, state how many red→green cycles you ran and which behavio
 
 ## Running tests
 
-**During cycles:** run the single test file or a filtered subset (`npx vitest run path/to/file.test.ts`, or `-t` on the test name).
+**During cycles:** run the single test file or a filtered subset for the behaviour you're working on — most test runners support running one file or filtering by test name.
 
-**Before reporting back:** run the tests and checks covering what you changed — the affected package only. Typically `pnpm --filter <package> test`, `typecheck`, `lint`, plus prettier on the files you touched. Zero errors required.
+**Before reporting back:** run the tests and checks covering what you changed — the affected package only: tests, typecheck, lint, plus the project's formatter on the files you touched. Zero errors required.
 
 **Never run the full test suite.** The full gate is the orchestrator's job.
 
@@ -78,244 +78,54 @@ This skill's scope ends at everything you changed running clean.
 
 ---
 
-## When to use testcontainers vs MSW vs factories
+## When to use integration tests vs unit tests with factories
 
-- **Code that directly calls the database** (repositories, query functions) → **integration tests with testcontainers**. Mock nothing. Use a real PostgreSQL container.
-- **Code that directly calls HTTP APIs** (API clients, services that call `fetch`, TanStack Query hooks) → **integration tests with MSW**. Mock nothing at the code level — MSW intercepts the network.
-- **Everything else** (domain logic, handlers, utilities) → **unit tests with factories**.
+- **Code that directly calls the database** (repositories, query functions) → **integration tests against a real database**, typically via a disposable container. Mock nothing at this layer.
+- **Code that directly calls HTTP APIs** (API clients, services that make outbound requests) → **integration tests with real network interception.** Mock nothing at the code level — intercept the request at the network boundary.
+- **Everything else** (domain logic, handlers, utilities) → **unit tests with factories.**
 
-Do not mock Prisma in unit tests — if the code calls Prisma, it belongs in a repository with an integration test.
-Do not mock `fetch` or stub HTTP clients with `vi.fn()` — if the code makes HTTP requests, use MSW to intercept them at the network level.
-
----
-
-## Integration tests with testcontainers + Prisma
-
-Install: `npm install --save-dev @testcontainers/postgresql testcontainers`
-
-### Container lifecycle (once per test file)
-
-```ts
-import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { PrismaClient } from '@prisma/client';
-import { execSync } from 'child_process';
-
-let container: StartedPostgreSqlContainer;
-let prisma: PrismaClient;
-
-beforeAll(async () => {
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
-  const url = container.getConnectionUri();
-  execSync('npx prisma migrate deploy', { env: { ...process.env, DATABASE_URL: url } });
-  prisma = new PrismaClient({ datasources: { db: { url } } });
-  await prisma.$connect();
-}, 60_000);
-
-afterAll(async () => {
-  await prisma.$disconnect();
-  await container.stop();
-});
-```
-
-### Test isolation — transaction rollback per test
-
-Each test runs inside an interactive transaction that is never committed:
-
-```ts
-let tx: Prisma.TransactionClient;
-let rollback: (err: Error) => void;
-
-beforeEach(async () => {
-  await new Promise<void>((resolve, reject) => {
-    rollback = reject;
-    prisma
-      .$transaction(async (t) => {
-        tx = t;
-        resolve();
-        await new Promise<never>(() => {});
-      })
-      .catch(() => {});
-  });
-});
-
-afterEach(() => {
-  rollback(new Error('rollback'));
-});
-```
-
-All queries within a test **must use `tx`**, not the global `prisma`.
-
----
-
-## Integration tests with MSW
-
-Install: `npm install --save-dev msw`
-
-### Server lifecycle (once per test file)
-
-```ts
-import { setupServer } from 'msw/node';
-import { http, HttpResponse } from 'msw';
-
-const server = setupServer();
-
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
-afterEach(() => server.resetHandlers());
-afterAll(() => server.close());
-```
-
-`onUnhandledRequest: 'error'` makes any request without a handler fail the test — no silent network leaks.
-
-### Define handlers per test
-
-Define handlers inside each test (or `beforeEach` for a shared happy path). Keep handlers close to the assertions that depend on them:
-
-```ts
-it('returns the user profile', async () => {
-  server.use(
-    http.get('https://api.example.com/users/:id', ({ params }) => {
-      return HttpResponse.json({
-        id: params.id,
-        name: 'Jane Doe',
-        email: 'jane@example.com',
-      });
-    }),
-  );
-
-  const profile = await userService.getProfile('user-1');
-
-  expect(profile).toEqual({
-    id: 'user-1',
-    name: 'Jane Doe',
-    email: 'jane@example.com',
-  });
-});
-```
-
-### Error and edge-case scenarios
-
-Use `server.use()` to override the happy path for individual tests:
-
-```ts
-it('throws on server error', async () => {
-  server.use(
-    http.get('https://api.example.com/users/:id', () => {
-      return new HttpResponse(null, { status: 500 });
-    }),
-  );
-
-  await expect(userService.getProfile('user-1')).rejects.toThrow('Server error');
-});
-
-it('handles network failure', async () => {
-  server.use(
-    http.get('https://api.example.com/users/:id', () => {
-      return HttpResponse.error();
-    }),
-  );
-
-  await expect(userService.getProfile('user-1')).rejects.toThrow();
-});
-```
-
-### Rules
-
-- **One `setupServer()` per test file.** Do not share server instances across files.
-- **`onUnhandledRequest: 'error'`** is non-negotiable. Silent passthrough hides real bugs.
-- **Define handlers in tests, not in shared fixture files.** The test must be readable without jumping to another file. Exception: a shared `handlers.ts` for a large API surface where every test uses the same happy path — but per-test overrides via `server.use()` still go in the test.
-- **Do not assert on request details** (headers, body) unless the test is specifically about how the request is formed. Test the _outcome_ (what your code does with the response), not the _request_.
-- **Use `HttpResponse.json()`, `HttpResponse.text()`, or `new HttpResponse()`** — never return plain objects.
+Do not mock the database client in unit tests — if the code queries the database, it belongs in a repository with an integration test.
+Do not mock the HTTP client or stub HTTP calls with a bare fake function — if the code makes HTTP requests, intercept them at the network level.
 
 ---
 
 ## Factories
 
-Every domain type has a factory in `test_utils/factories/`. **Never define factory functions inside a test file.** Always use `randomUUID()` for IDs.
+Every domain type has a factory (typically under a `test_utils/factories/`-style location). **Never define factory functions inside a test file.** Always generate unique values (e.g. a random ID) rather than hardcoding them.
 
 **Use factories for test data setup — never call repository methods directly.** Exception: a repository's own test of a method may call that method directly, since the method itself is what's under test. All other test data, including setup for the entity being tested, goes through the factory.
 
-**BaseFactory:**
-
-```ts
-export abstract class BaseFactory<T> {
-  abstract build(overrides?: Partial<T>): T;
-  buildList(count: number, overrides?: Partial<T>): T[] {
-    return Array.from({ length: count }, () => this.build(overrides));
-  }
-}
-```
-
-**Domain factory:**
-
-```ts
-class UserFactory extends BaseFactory<User> {
-  build(overrides: Partial<User> = {}): User {
-    return {
-      id: randomUUID(),
-      name: 'Test User',
-      email: `test-${randomUUID()}@example.com`,
-      isAdmin: false,
-      tier: 'free',
-      ...overrides,
-    };
-  }
-  admin(overrides: Partial<User> = {}): User {
-    return this.build({ isAdmin: true, ...overrides });
-  }
-}
-export const userFactory = new UserFactory();
-```
-
-For integration tests, use a thin `create` helper that inserts via `tx`:
-
-```ts
-async function createUser(overrides: Partial<User> = {}) {
-  return tx.user.create({ data: userFactory.build(overrides) });
-}
-```
+A factory typically exposes a `build(overrides)` for a single instance and a `buildList(count, overrides)` for many, so tests can override only the fields relevant to the scenario. For integration tests, pair the factory with a thin `create` helper that inserts the built object through the transaction/connection the test is using.
 
 ---
 
 ## Universal test rules
 
 - **Test behaviour, not implementation.** A test must survive an internal refactor.
-- **One concept per `it`.** Multiple assertions OK if same logical outcome.
+- **One concept per test.** Multiple assertions OK if same logical outcome.
 - **Tests must be hermetic.** No shared mutable state, no run-order dependency.
 - **No logic in tests.** No conditionals, loops, or try/catch.
 - **Name the scenario and outcome:** `returns false when order is shipped`.
 
-## Mocking with vi.fn / vi.mock
+## Mocking
 
-Mock at module boundaries only: external services, database clients, filesystem. Prefer dependency injection over `vi.mock`. Create `vi.fn()` mocks inside each `it` block. For HTTP APIs, use MSW instead of `vi.fn()` — see the MSW section above.
+Mock at module boundaries only: external services, database clients, filesystem. Prefer dependency injection over a mocking framework. Create mocks fresh inside each test case rather than sharing them across tests. For HTTP APIs, intercept at the network level instead of mocking the HTTP client — see the stack-specific guidance for the concrete mechanism.
 
 ## Async tests
 
-Always `await` async calls. Never use `done` callbacks.
+Always await async calls before asserting on their result. Avoid callback-based async test patterns.
 
 ## Table-driven tests
 
-```ts
-it.each([
-  ['free', 100, 100],
-  ['pro', 100, 90],
-  ['enterprise', 100, 80],
-] as const)('applies correct discount for %s tier', (tier, input, expected) => {
-  const user = userFactory.build({ tier });
-  expect(applyDiscount(input, user)).toBe(expected);
-});
-```
+When the same assertion logic applies across several input/output pairs, express it as one parameterized test with a table of cases rather than copy-pasting near-identical test bodies. Each row names the scenario (e.g. the tier) alongside its input and expected output, and the test body stays generic across all rows. Most test frameworks have a built-in construct for this (e.g. a "for each" or "each" form) — see the stack-specific guidance for the concrete syntax.
 
 ## Date-dependent test data
 
 Never hardcode a calendar date tied to "the current year" (`` `${CURRENT_YEAR}-08-01` ``) or any other absolute date, when the code under test compares a date to "now" (past-date rejection, expiry checks, booking-window/cutoff logic). A hardcoded date silently goes stale the moment the calendar catches up to it — the test passes for months, then fails in CI with no code change, because the fixture is now wrong, not because of a regression. This has repeatedly bitten this codebase specifically in `checkIn`/`checkOut` reservation fixtures.
 
-- **Compute dates relative to now.** Use or add a `daysFromNow(offsetDays)`-style helper (`new Date()` + `setUTCDate()` + `toISOString().slice(0, 10)`) instead of a literal string. Check the test file and sibling test files hitting the same endpoint for an existing helper before writing a new one.
-- **Or freeze time** with `vi.setSystemTime()` / `vi.useFakeTimers()` when the test needs a fixed "today" to assert against — restore it in `afterEach`.
+- **Compute dates relative to now.** Use or add a `daysFromNow(offsetDays)`-style helper instead of a literal string. Check the test file and sibling test files hitting the same endpoint for an existing helper before writing a new one.
+- **Or freeze time** using your test framework's clock-control utility (e.g. `vi.setSystemTime()` / `vi.useFakeTimers()` in Vitest) when the test needs a fixed "today" to assert against — restore it afterward.
 - When fixing one instance of this bug, grep the rest of the file for the same pattern (e.g. `grep -n '${CURRENT_YEAR}'` or a literal year). It tends to occur in clusters — one file with a good relative-date helper still has hardcoded dates scattered through other tests that were written without reusing it.
-
-## React component tests
-
-Use React Testing Library. Query by accessible role, label, or visible text. Never `getByTestId`. Use `userEvent` (not `fireEvent`). Test all three data states: loading, error, success.
 
 ## Coverage
 
@@ -334,9 +144,9 @@ This skill governs the red-green-refactor mechanics within a single test cycle. 
 - Wrote tests for several behaviours before running any of them red
 - Showing passing tests without first showing failing ones
 - Created new classes/functions in a refactor but wrote zero new tests
-- About to mock Prisma instead of using testcontainers
-- About to mock `fetch` or stub an HTTP client with `vi.fn()` instead of using MSW
-- Wrote a test fixture with a hardcoded calendar date (`2026-08-01`, `` `${CURRENT_YEAR}-06-01` ``) for code that compares a date to "now" — use a relative-date helper or `vi.setSystemTime()` instead
+- About to mock the database client instead of using a real database via an integration test
+- About to mock `fetch` or stub an HTTP client instead of intercepting at the network level
+- Wrote a test fixture with a hardcoded calendar date (`2026-08-01`, `` `${CURRENT_YEAR}-06-01` ``) for code that compares a date to "now" — use a relative-date helper or a clock-freezing utility instead
 
 ## Rationalizations — and the responses
 
@@ -344,6 +154,10 @@ This skill governs the red-green-refactor mechanics within a single test cycle. 
 - **"I'll add tests after"** → Tests after prove what code does, not what it should do.
 - **"I'll write all the tests up front, then make them pass"** → Then "minimum implementation" is the whole feature, and the red run identifies nothing.
 - **"We're in a hurry"** → Code without tests creates more delays.
-- **"Setting up a container is complex"** → A Prisma mock tests nothing real.
-- **"I'll just mock fetch, it's simpler"** → A fetch mock tests your mock, not your HTTP integration. MSW intercepts real requests.
+- **"Setting up a container is complex"** → A mocked database client tests nothing real.
+- **"I'll just mock fetch, it's simpler"** → A fetch mock tests your mock, not your HTTP integration. Network-level interception exercises the real request.
 - **"Existing tests cover the extracted code"** → They cover it through the old structure. New units need direct tests.
+
+## Stack-specific guidance
+
+Read `references/typescript.md` for TypeScript/Node-specific implementation detail before applying this skill to a TypeScript repo. A Go equivalent (`references/golang.md`) does not exist yet — if this skill applies to a Go repo, flag the gap rather than force-fitting the TypeScript reference.
