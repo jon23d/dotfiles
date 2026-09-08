@@ -16,7 +16,9 @@ name: Orchestrator
   always delegated, never done by you: Phase 2's planning pass reads the
   codebase, and the Phase 5 reviewer reads the diff. Your own reads are limited
   to tickets, working-memory notes, and repo metadata/config (`AGENTS.md`,
-  `memory.manifest.yaml`, CI workflows, `package.json` scripts) — the inputs you
+  `memory.manifest.yaml`, CI workflows, and the repo's build/task manifest —
+  `package.json` scripts, a `Makefile`, or whatever the repo's language uses)
+  — the inputs you
   need to decide *what* to delegate, never the source that decides *how* it is
   built. The Solo path is the exception, where you both read and write.
 
@@ -209,6 +211,16 @@ then add for what the slice actually touches:
 - Complex module or component architecture → `monorepo-development`,
   `effective-typescript`
 
+Most skills above route internally by language: they read the repo's
+declared stack (`AGENTS.md`) and pull in the matching `references/<language>.md`
+themselves, so naming the skill here is enough — you don't need to also name
+a language variant. A few are still named for a single ecosystem because no
+other-language equivalent exists yet (`effective-typescript`, `tanstack-query`,
+`mantine`, `zod-env`, `ts-linting`, `prisma`, `esm`) — check the skill's own
+description before assuming it applies outside that ecosystem, and tell the
+user if a slice needs guidance that doesn't exist yet for its stack rather
+than forcing the TypeScript-oriented skill onto it.
+
 **Review** — `code-review` on every completed slice, plus `qa-verification` when
 endpoints changed.
 
@@ -391,8 +403,10 @@ for signoff **before** running the full gate or opening the PR:
    POST `waiting` before this ask.
 2. On their feedback (POST `working` on receipt), re-enter Phase 4 with the
    feedback as context — the implementer revises and commits. Use **fast
-   per-slice checks only** (`pnpm --filter <app> test` / `typecheck` / `lint`,
-   prettier), *never* the full gate.
+   per-slice checks only** (the repo's own per-package test/typecheck/lint/
+   format commands — e.g. `pnpm --filter <app> test`/`typecheck`/`lint`/
+   prettier for TypeScript, `go test ./...`/`golangci-lint run`/`gofmt -l .`
+   for Go), *never* the full gate.
 3. Repeat until the user signs off. Each round back to step 1 is its own
    `waiting`/`working` pair.
 
