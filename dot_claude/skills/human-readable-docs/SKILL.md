@@ -79,11 +79,11 @@ If a cell description exceeds ~80 characters, shorten it and move the detail to 
 
 ## Code examples
 
-**Use TypeScript for all code examples.**
-This codebase is TypeScript. Do not include examples in Python, JavaScript, or any other language.
+**Use a single, consistent language for all code examples.**
+Code examples should use the target repo's actual language — see the matching stack reference for the default when none is specified. Do not mix languages within one doc.
 
 **One example per concept.**
-One well-commented TypeScript example is better than two thin ones in different languages.
+One well-commented example is better than two thin ones in different languages.
 
 **Make examples copy-paste ready.**
 Examples should include imports, handle errors, and reflect real usage — not toy pseudocode.
@@ -105,3 +105,7 @@ const valid = crypto.timingSafeEqual(expected, actual);
 - Section order that follows system internals instead of the reader's task
 - Single-item subheadings (`###` with no sibling)
 - Paragraphs that open by restating the section heading
+
+## Stack-specific guidance
+
+Read `references/typescript.md` for TypeScript/Node-specific implementation detail before applying this skill to a TypeScript repo. A Go equivalent (`references/golang.md`) does not exist yet — if this skill applies to a Go repo, flag the gap rather than force-fitting the TypeScript reference.
