@@ -28,23 +28,26 @@ unchanged") — do not omit it.
   don't skip
 - **`.env.example`** — new env vars with placeholder values, never real
   secrets
-- **Confluence** — see below
+- **Wiki** (Confluence or OpenProject, per repo) — see below
 
-## Confluence
+## Wiki
 
-Confluence is canonical; local `docs/` files are a secondary mirror — update
-both when behavior changes. Resolve the space via `.project-management.yml`
-(`confluence.space_key`, per the `project-management` skill's Step 0) rather
-than assuming one. Read the page tree first to find the right parent
-(typically a `Functionality` or `Apps` section) and read the existing page
-before editing it. Create the page under that parent if none exists yet.
+The wiki is canonical; local `docs/` files are a secondary mirror — update
+both when behavior changes. Resolve which backend and space/project via
+`.project-management.yml`'s `wiki.type` (per the `project-management` skill's
+Step 0) rather than assuming one — `wiki.confluence.space_key` for Confluence,
+`wiki.openproject.project_identifier` (shared with `tracker.openproject`) for
+OpenProject. Read the page tree first to find the right parent (typically a
+`Functionality` or `Apps` section, or the equivalent top-level wiki page) and
+read the existing page before editing it. Create the page under that parent
+if none exists yet.
 
 ## Method
 
 1. Identify every owned document plausibly affected by the change
 2. Read each one's current state — don't rewrite what hasn't changed
 3. Make the minimum targeted edit needed to reflect reality, local and
-   Confluence both
+   wiki both
 4. Report every owned document from the checklist, including the ones you
    didn't touch and why
 

@@ -1,5 +1,9 @@
 # Confluence Conventions
 
+Applies when `.project-management.yml` sets `wiki.type: confluence`. If the
+repo is on `wiki.type: openproject` instead, use
+`references/openproject-conventions.md` — don't mix the two.
+
 ## Space structure
 
 Each repo's Confluence space has (at minimum) a `spikes` parent page at the space root, with five child pages representing lifecycle state:
@@ -38,11 +42,7 @@ Confluence storage-format (XHTML) snippet, for use when creating/updating the pa
 
 Notes:
 - `ac:name` may be `jira` or `jira-legacy-metadata`-adjacent depending on Confluence Cloud vs Data Center; this should already be resolved and, ideally, noted in `.project-management.yml` the first time you work in a given space. If it isn't yet, confirm via MCP tool introspection once and record it, rather than re-guessing per spike.
-- Which grouping mechanism to use — classic epic link, next-gen parent link, or a shared label — comes from `jira.epic_link_mode` in `.project-management.yml`, not a per-spike decision:
-  - `epic_link` → `"Epic Link" = ABC-123`
-  - `parent` → `"Parent" = ABC-123`
-  - `label` → `labels = <grouping_label_prefix><spike-ticket-key>` (e.g. `labels = spike-ABC-123`), applied to the epic and every child ticket at creation time
-  - If `.project-management.yml` doesn't have `jira.epic_link_mode` set yet, this is a Step-0 resolution: introspect which mechanism the project actually uses, then write it into the config so this decision isn't repeated on the next spike.
+- Which grouping mechanism to use — classic epic link, next-gen parent link, or a shared label — comes from `tracker.jira.epic_link_mode` in `.project-management.yml`, not a per-spike decision. See `references/jira-conventions.md` for what each mode means and the exact JQL clause it produces.
 - Always apply whichever grouping mechanism the config specifies at ticket-creation time — don't create the tickets first and the macro's query second without making sure they'll actually match.
 - If your MCP server can't write raw storage-format XHTML (some expose a simplified content API instead), fall back to whatever macro-insertion capability it does expose, or note in the doc that the list needs manual upkeep until that's available — don't silently omit the link.
 

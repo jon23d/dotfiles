@@ -182,7 +182,7 @@ Always use this template. Fill every section — do not leave sections empty or 
 
 ## Ticket
 
-{JIRA-TICKET-KEY}
+{TICKET-KEY}
 ```
 
 ## Writing the How to Test section
@@ -203,11 +203,11 @@ Write one numbered step per action. Start from: _reviewer has `main` checked out
 
 This section is always required. If none of the above apply, write: "No setup needed — check out the branch and run the app."
 
-Issue tracking lives in Jira, not Gitea, so there is no `Closes #N` auto-close mechanism here. The Jira ticket key is already in the branch name and PR title per the `project-management` skill's convention, and should also be written into the PR body's `## Ticket` section.
+Issue tracking lives in the tracker configured by `project-management` (Jira or OpenProject), not Gitea, so there is no `Closes #N` auto-close mechanism here. The ticket key/ID is already in the branch name and PR title per the `project-management` skill's convention, and should also be written into the PR body's `## Ticket` section.
 
 ## After opening the PR
 
-Use the `project-management` skill to update the linked Jira ticket (e.g. add the PR URL as a comment or link, move status) — do not use `gitea-mcp_issue_write`, which operates on Gitea issues, not Jira tickets.
+Use the `project-management` skill to update the linked tracker ticket (e.g. add the PR URL as a comment or link, move status) — do not use `gitea-mcp_issue_write`, which operates on Gitea issues, not tracker tickets.
 
 ## Stack-specific guidance
 

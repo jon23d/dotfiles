@@ -7,7 +7,7 @@ Use these as starting structure, not rigid forms — trim or extend sections to 
 ```markdown
 # Spike: [Title]
 
-**Jira ticket:** [KEY-123]
+**Ticket:** [KEY-123]
 **Status:** Open
 **Owner (human):** [name]
 **Started:** [date]
@@ -51,14 +51,14 @@ Use these as starting structure, not rigid forms — trim or extend sections to 
      Do not hand-maintain this list. -->
 ```
 
-## RFC (Confluence page, or in-repo `docs/rfcs/` if the team prefers version-controlled RFCs — confirm which per repo)
+## RFC (wiki page, or in-repo `docs/rfcs/` if the team prefers version-controlled RFCs — confirm which per repo)
 
 ```markdown
 # RFC: [Title]
 
 **Status:** Draft | In Review | Accepted | Rejected | Superseded
 **Author:** [agent/human]
-**Jira ticket:** [KEY-123]
+**Ticket:** [KEY-123]
 **Date:** [date]
 
 ## Summary
@@ -89,8 +89,8 @@ In-repo ADRs are the **binding, terse** record — the thing an agent should be 
 
 **Status:** Accepted | Superseded by NNNN | Deprecated
 **Date:** [date]
-**Confluence:** [link to the spike/RFC page with full discussion]
-**Jira:** [epic/feature key this decision is tracked under]
+**Wiki:** [link to the spike/RFC page with full discussion]
+**Ticket:** [epic/feature/parent key this decision is tracked under]
 
 ## Context
 [1-3 sentences: the situation that forced this decision. Not the full research — that's in Confluence.]
