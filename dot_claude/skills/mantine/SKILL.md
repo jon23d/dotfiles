@@ -1,13 +1,32 @@
 ---
 name: mantine
-description: Mantine v7 deep implementation guide. Load this skill whenever building or modifying UI for a business or internal application that uses Mantine. Use alongside `ui-design`. Covers package setup, theming, component selection, CSS Modules styling, @mantine/form patterns, key hooks, and common Mantine patterns (modal with form, notifications, AppShell). Load whenever you see @mantine imports, a MantineProvider, or the user mentions Mantine, mantine-datatable, or @mantine/form.
+description: Use when building or modifying UI in a React application that uses Mantine — any major version. Triggers include @mantine/* imports, a MantineProvider, @mantine/form, @mantine/dates, mantine-datatable, or the user mentioning Mantine. Also use when upgrading a project between Mantine majors (7 → 8 → 9) or when a build breaks after a @mantine/* version bump. Use alongside `ui-design`.
 ---
 
-# Mantine v7
+# Mantine
 
-This skill covers Mantine v7, which made a clean break from v6. The most important change: **the `sx` prop is gone**. All component styling goes through CSS Modules, the `classNames` prop, or `style` with CSS variables. If you see `sx`, that is v6 code — do not write new code that way.
+Mantine's styling model has been stable since v7: CSS Modules, the `classNames` prop, `style` with `var(--mantine-*)`, one `MantineProvider`. That model is what this file teaches. What changed between majors — dates values, form resolvers, renamed props and hooks — lives in one reference file per major, and the first step is always to find out which one applies.
 
-For general UI design principles, visual standards, accessibility, and responsive patterns, see the `ui-design` skill. This skill focuses on how to implement things correctly in Mantine.
+For general UI design principles, visual standards, accessibility, and responsive patterns, see the `ui-design` skill.
+
+---
+
+## 0. Determine the major version before writing anything
+
+Do this mechanically, not from memory:
+
+```bash
+grep '"@mantine/core"' package.json
+```
+
+- `^7` → read `references/v7.md`
+- `^8` → read `references/v8.md`
+- `^9` → read `references/v9.md`
+- No `@mantine/core` yet (new project) → use the major pinned in the repo's `AGENTS.md`. If it names none, **stop and ask** — don't default to the newest or the one you know best. Note that 9.x requires React 19.2+, which is a project-level decision, not a UI one.
+
+The reference file is short and lists only what differs from the shared guidance below. Read it before writing code; a `zodResolver` import or a `Date` passed to a date picker is correct in one major and a build error in another.
+
+Mantine publishes its migration guides in an LLM-oriented format at `https://mantine.dev/llms/guides-7x-to-8x.md` and `https://mantine.dev/llms/guides-8x-to-9x.md`. For an actual upgrade, fetch the relevant guide rather than working from the summaries in `references/`.
 
 ---
 
@@ -110,7 +129,7 @@ Reach for these before writing custom components.
 | Multi-select with search           | `MultiSelect`                                 | `@mantine/core`                             |
 | Tags / freeform chips              | `TagsInput`                                   | `@mantine/core`                             |
 | Combobox (full custom)             | `Combobox`                                    | `@mantine/core`                             |
-| Date picker                        | `DatePickerInput` / `DateInput`               | `@mantine/dates`                            |
+| Date picker                        | `DatePickerInput` / `DateInput` — value type is `Date` in 7.x, string in 8.x+ | `@mantine/dates`     |
 | Date range                         | `DatePickerInput type="range"`                | `@mantine/dates`                            |
 | Loading skeleton                   | `Skeleton`                                    | `@mantine/core`                             |
 | Overlay loading on section         | `LoadingOverlay`                              | `@mantine/core`                             |
@@ -129,7 +148,7 @@ Reach for these before writing custom components.
 
 ## 4. Styling: CSS Modules with Mantine
 
-The v7 way is CSS Modules with Mantine's PostCSS utilities. Use `light-dark()` and `var(--mantine-*)` for all values.
+The way to style Mantine is CSS Modules with Mantine's PostCSS utilities. Use `light-dark()` and `var(--mantine-*)` for all values.
 
 ```css
 /* Component.module.css */
@@ -188,8 +207,11 @@ Use `style` prop with CSS variables for one-off values — never hardcode:
 Read `references/forms.md` for complete patterns. The essentials:
 
 ```tsx
-import { useForm, zodResolver } from '@mantine/form';
+import { useForm } from '@mantine/form';
 import { z } from 'zod';
+// Resolver import differs by major — see references/v<major>.md:
+//   7.x / 8.x: zodResolver from '@mantine/form'   (or mantine-form-zod-resolver)
+//   9.x:       schemaResolver from '@mantine/form' with a Standard Schema (zod v4)
 
 const schema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -201,7 +223,7 @@ type FormValues = z.infer<typeof schema>;
 function MyForm() {
   const form = useForm<FormValues>({
     initialValues: { name: '', email: '' },
-    validate: zodResolver(schema),
+    validate: resolver(schema), // zodResolver or schemaResolver per major
     // Validate on change only after first submit attempt
     validateInputOnChange: false,
     validateInputOnBlur: true,
@@ -245,7 +267,7 @@ import {
   useDisclosure,        // open/close state (modal, drawer, popover)
   useMediaQuery,        // responsive breakpoints
   useDebouncedValue,    // debounce search inputs
-  useLocalStorage,      // persisted state
+  useLocalStorage,      // persisted state (9.x: typed `T | undefined` without defaultValue)
   useHotkeys,           // keyboard shortcuts
   useClickOutside,      // dismiss custom dropdowns
   useListState,         // array state management
@@ -329,7 +351,7 @@ interface Props {
 }
 
 function EditModal({ opened, onClose, onSaved }: Props) {
-  const form = useForm<FormValues>({ initialValues: { name: '' }, validate: zodResolver(schema) });
+  const form = useForm<FormValues>({ initialValues: { name: '' }, validate: resolver(schema) });
 
   // Reset form when modal opens
   useEffect(() => {
@@ -429,9 +451,9 @@ import { DataTable } from 'mantine-datatable';
 
 ---
 
-## 8. Gotchas
+## 8. Gotchas (all majors)
 
-**No `sx` prop.** It was removed in v7. Use `style`, CSS Modules, or `classNames`.
+**No `sx` prop, no `createStyles`, no `theme.fn.*`.** Those are v6. Use `style`, CSS Modules, or `classNames`; `var(--mantine-*)` replaces `theme.fn`. If you see them, you're looking at v6 code — don't write new code that way.
 
 **CSS must be imported.** Each package requires its own CSS import. Forgetting this causes unstyled components with no error:
 
@@ -440,8 +462,6 @@ import '@mantine/core/styles.css'; // always
 import '@mantine/notifications/styles.css'; // when using notifications
 import '@mantine/dates/styles.css'; // when using date pickers
 ```
-
-**`theme.fn.*` is gone.** CSS variables replace it. Use `var(--mantine-color-blue-6)` instead of `theme.fn.themeColor('blue', 6)`.
 
 **Portal components and CSS Modules.** `Modal`, `Drawer`, `Menu`, `Popover`, `Tooltip` render into a portal (outside your component's DOM node). CSS Modules scoped to a parent component won't reach them. Use `classNames` prop or global styles.
 
@@ -467,5 +487,14 @@ import { ColorSchemeScript } from '@mantine/core';
 
 ## Reference files
 
-- `references/forms.md` — Complete `@mantine/form` patterns: nested objects, array fields, async initial values, `TransformedValues`, file uploads
+Mantine also publishes its own skills (`mantinedev/skills`). When the task is forms, a custom dropdown, or a component built with `factory()`, load the official one after §0 — they assume 9.x and don't say so:
+
+- `mantine-form` — `useForm` in depth: validation, nested/array fields, `createFormContext`, uncontrolled mode, `useField`
+- `mantine-combobox` — custom select/autocomplete/multiselect from `Combobox` primitives
+- `mantine-custom-components` — `factory()`, `polymorphicFactory()`, Styles API, `createVarsResolver`, `Component.extend()`
+
+For exact props of any component, the `@mantine/mcp-server` (if connected) or `https://mantine.dev/llms/<package>-<component>.md` beats anything summarised here.
+
+- `references/v7.md`, `references/v8.md`, `references/v9.md` — what differs from this file in each major, and the headline breaking changes when moving up from the previous one. Read the one matching `package.json` (see §0).
+- `references/forms.md` — Our `@mantine/form` conventions (server-error mapping, async initial values, file uploads). For everything else on forms, prefer the official `mantine-form` skill
 - `references/theming.md` — Theme tokens, color system, dark mode, CSS variable reference

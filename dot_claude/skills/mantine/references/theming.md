@@ -17,7 +17,7 @@ export const theme = createTheme({
   headings: { fontFamily: 'Inter, sans-serif', fontWeight: '700' },
 
   // Sizing
-  defaultRadius: 'sm',
+  defaultRadius: 'sm', // set explicitly — the default changed from sm to md in 9.x
   scale: 1,                        // scales all rem values — useful for density adjustments
 
   // Spacing scale (overrides defaults: xs=10, sm=12, md=16, lg=20, xl=32)
