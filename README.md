@@ -62,10 +62,10 @@ outside.
 ### Bootstrapping a new machine
 
 Decryption requires the GPG private key to be present locally — there is no
-automated way to deliver it (deliberately; see conversation history for why).
+automated way to deliver it.
 On a brand new machine:
 
-1. Manually retrieve the private key from 1Password yourself and get it onto
+1. Manually retrieve the private key from your secret store yourself and get it onto
    the machine (however you'd like — paste into a file, `multipass transfer`
    for VMs, etc.).
 2. Import it and set trust:
